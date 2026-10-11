@@ -65,7 +65,7 @@ def _ratio(part: int, whole: int) -> str:
     return f"{part}/{whole} ({100 * part / whole:.0f}%)" if whole else "n/a"
 
 
-def _table(headers: list[str], rows: list[list[str]]) -> str:
+def table(headers: list[str], rows: list[list[str]]) -> str:
     widths = [max(len(row[n]) for row in [headers, *rows]) for n in range(len(headers))]
     lines = ["  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True))
              for row in [headers, ["-" * width for width in widths], *rows]]  # fmt: skip
@@ -100,7 +100,7 @@ def fault_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
         "Tokens (without -> with)",
         "Runs with a false alarm",
     ]
-    return _table(headers, rows)
+    return table(headers, rows)
 
 
 def similarity_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
@@ -122,7 +122,7 @@ def similarity_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
         "Runs with a false alarm (off -> on)",
         "Correct result (off -> on)",
     ]
-    return _table(headers, rows)
+    return table(headers, rows)
 
 
 def scorecard(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> str:
@@ -166,7 +166,7 @@ def scorecard(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> 
         ],
         ["Finished subgoals re-run after a crash", "0", "not measured, recovery not built"],
     ]
-    return _table(["Measure", "Target", "Result"], rows)
+    return table(["Measure", "Target", "Result"], rows)
 
 
 @dataclass(frozen=True)

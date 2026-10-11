@@ -1,0 +1,82 @@
+[
+  {
+    "id": "dead-worker-recovery",
+    "question": "How do Temporal, Celery and AWS Step Functions each detect a worker that dies in the middle of a task, and what does each do to recover?"
+  },
+  {
+    "id": "restart-delivery-guarantees",
+    "question": "What delivery guarantees do Redis Pub/Sub, Redis Streams with consumer groups, and Apache Kafka consumer groups each give a consumer that restarts, and which is the lightest option that does not lose messages?"
+  },
+  {
+    "id": "otel-genai-conventions",
+    "question": "What span names and attributes do the OpenTelemetry GenAI semantic conventions define for agent invocations, model calls and tool calls, and what is their current stability status?"
+  },
+  {
+    "id": "framework-failure-handling",
+    "question": "How do LangGraph, CrewAI and the OpenAI Agents SDK each handle a failed or stuck step in a multi-agent run, in terms of retries, timeouts and checkpoints?"
+  },
+  {
+    "id": "mast-taxonomy",
+    "question": "According to the MAST taxonomy from the paper 'Why Do Multi-Agent LLM Systems Fail?', what are the three failure categories, and which individual failure modes are most common?"
+  },
+  {
+    "id": "concord-vs-temporal-heartbeats",
+    "question": "How does Concord detect and recover from a dead worker, and how does that compare with Temporal's activity heartbeat timeouts?"
+  },
+  {
+    "id": "concord-dedupe-vs-semantic-cache",
+    "question": "How does Concord decide that two subgoals are duplicates, and how does that differ from how semantic caches such as GPTCache decide that two prompts are the same?"
+  },
+  {
+    "id": "concord-tracing-vs-observability-tools",
+    "question": "How does Concord model a multi-agent run as an OpenTelemetry trace, and how do Langfuse and Arize Phoenix model agent runs?"
+  },
+  {
+    "id": "fencing-tokens",
+    "question": "What is a fencing token in distributed locking, why do lease-based locks need one, and how do etcd and ZooKeeper provide it?"
+  },
+  {
+    "id": "bm25-vs-dense-retrieval",
+    "question": "What are the practical differences between BM25 and dense embedding retrieval for a small document set, and when do hybrid approaches help?"
+  },
+  {
+    "id": "llm-judge-reliability",
+    "question": "What does published research say about the reliability of LLM-as-judge evaluation, its known biases, and how to mitigate them?"
+  },
+  {
+    "id": "multi-agent-positions",
+    "question": "What positions do Anthropic's 'How we built our multi-agent research system' and Cognition's 'Don't Build Multi-Agents' take on multi-agent systems, and where do they agree?"
+  },
+  {
+    "id": "concord-scorecard-vs-studies",
+    "question": "According to Concord's own scorecard, which failures does its supervisor catch and which does it miss, and how does that compare with what published studies say are the most common multi-agent failure modes?"
+  },
+  {
+    "id": "durable-execution",
+    "question": "How do Temporal, Restate and DBOS each implement durable execution, and what does each require of the developer's code?"
+  },
+  {
+    "id": "blackboard-architecture",
+    "question": "What is the blackboard architecture in AI, where did it originate, and how have recent LLM multi-agent papers used it?"
+  },
+  {
+    "id": "concord-supervisor-vs-langgraph",
+    "question": "What does Concord's supervisor do before a subgoal is dispatched, and how does that differ from the supervisor pattern in LangGraph?"
+  },
+  {
+    "id": "jaeger-clock-skew",
+    "question": "How does Jaeger's clock skew adjustment work, when does it change span timestamps, and how can it be turned off?"
+  },
+  {
+    "id": "agent-run-budgets",
+    "question": "What mechanisms do the Claude API, the OpenAI API and LangGraph provide for capping the tokens or steps an agent run can use?"
+  },
+  {
+    "id": "concord-known-limits",
+    "question": "What are the known limits of Concord's duplicate detection and tracing according to its documentation, and what would be needed to remove each?"
+  },
+  {
+    "id": "idempotency-keys",
+    "question": "What are idempotency keys, how do Stripe's API and AWS SQS FIFO queues use them, and what do they not protect against?"
+  }
+]
