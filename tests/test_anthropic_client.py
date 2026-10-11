@@ -39,7 +39,7 @@ async def test_plain_request_shape_and_token_accounting():
     completion = await client.complete("Say hello", system="Be brief")
 
     (request,) = sdk.requests
-    assert request["model"] == "claude-opus-5-5"
+    assert request["model"] == "claude-sonnet-5-5"
     assert request["messages"] == [{"role": "user", "content": "Say hello"}]
     assert request["system"] == "Be brief"
     assert request["output_config"] == {"effort": "low"}

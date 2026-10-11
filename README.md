@@ -124,7 +124,8 @@ uv run python -m concord.evals --yes --record evals/recording.json  # all 20
 uv run python -m concord.evals --replay evals/recording.json        # rerun for free
 ```
 
-It spends real money, so it refuses to start without `--yes` and stops starting new
+It uses Claude Sonnet 5.5 at medium effort by default; `--model` and `--effort` change
+that. It spends real money, so it refuses to start without `--yes` and stops starting new
 questions at `--max-cost` (default $25 of token spend; web search fees are extra). The
 answer comparison is made by the same model, not by a person, so treat it as a signal
 rather than a verdict. This has not been run yet.

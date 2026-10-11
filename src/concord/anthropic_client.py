@@ -6,7 +6,7 @@ from anthropic import AsyncAnthropic
 
 from concord.llm import Completion
 
-DEFAULT_MODEL = "claude-opus-5-5"
+DEFAULT_MODEL = "claude-sonnet-5-5"
 PROVIDER = "anthropic"
 
 # Lets the API re-run a request that a safety classifier declined on another model,
