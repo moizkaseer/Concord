@@ -27,6 +27,7 @@ class SubgoalSpec(BaseModel):
     id: str = Field(pattern=r"^[A-Za-z0-9_.-]+$", max_length=64)
     description: str = Field(min_length=1)
     depends_on: list[str] = Field(default_factory=list)
+    specialist: str = "general"  # which kind of worker should handle it
 
 
 class Subgoal(SubgoalSpec):

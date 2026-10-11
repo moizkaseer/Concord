@@ -306,6 +306,7 @@ class Blackboard:
                     self._p + "sg:" + spec.id,
                     mapping={
                         "description": spec.description,
+                        "specialist": spec.specialist,
                         "depends_on": json.dumps(spec.depends_on),
                         "state": root_state if is_root else State.PENDING,
                         "unmet": len(spec.depends_on),
@@ -329,6 +330,7 @@ class Blackboard:
         return Subgoal(
             id=subgoal_id,
             description=record["description"],
+            specialist=record.get("specialist", "general"),
             depends_on=json.loads(record["depends_on"]),
             state=State(record["state"]),
             attempts=int(record["attempts"]),
