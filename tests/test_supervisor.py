@@ -1,7 +1,10 @@
 import asyncio
 import contextlib
 
+import pytest
+
 from concord.dedupe import HashingEmbedder
+from concord.drift import DriftVerdict, Outcome
 from concord.models import RunState, State, SubgoalSpec
 from concord.supervisor import GROUP, Supervisor
 from concord.worker import WorkerPool, WorkResult
@@ -263,3 +266,178 @@ async def test_supervisor_started_late_catches_up_from_the_first_event(board):
         status = await pool
 
     assert status.state == RunState.COMPLETED
+
+
+class ScriptedChecker:
+    """Gives the verdicts it was told to give, in order, per subgoal; then on-task."""
+
+    def __init__(self, verdicts: dict[str, list[DriftVerdict]] | None = None) -> None:
+        self._verdicts = verdicts or {}
+        self.seen: list[tuple[str, str]] = []
+
+    async def check(self, subgoal, inputs, output) -> DriftVerdict:
+        self.seen.append((subgoal.id, output))
+        queue = self._verdicts.get(subgoal.id)
+        return queue.pop(0) if queue else DriftVerdict(Outcome.ON_TASK, tokens=5)
+
+
+DRIFTED = DriftVerdict(Outcome.DRIFTED, "it is about wind, not solar", tokens=7)
+
+
+class Attempts:
+    """A handler whose output names the attempt, and which records the feedback it got."""
+
+    def __init__(self) -> None:
+        self.feedback: list[tuple[str, str | None]] = []
+
+    async def __call__(self, subgoal, inputs) -> WorkResult:
+        self.feedback.append((subgoal.id, subgoal.feedback))
+        return WorkResult(f"{subgoal.id} attempt {subgoal.attempts}", 10)
+
+
+async def test_drifted_output_is_sent_back_and_the_retry_is_used(board):
+    await board.submit([spec("a"), spec("b", None, "a")], supervised=True, review=True)
+    handler = Attempts()
+    checker = ScriptedChecker({"a": [DRIFTED]})
+
+    status = await run_supervised(board, handler, checker=checker)
+
+    assert status.state == RunState.COMPLETED
+    a = await board.get("a")
+    assert (a.output, a.attempts, a.rejections) == ("a attempt 2", 2, 1)
+    # The retry was told why the first output was sent back.
+    assert handler.feedback[:2] == [("a", None), ("a", "it is about wind, not solar")]
+    flagged = [e for e in await board.interventions() if e["type"] == "supervisor.flagged"]
+    assert [(e["id"], e["action"], e["reason"]) for e in flagged] == [
+        ("a", "retried", "it is about wind, not solar")
+    ]
+    # Three worker calls at 10 tokens, plus the reviews: 7 + 5 for a, 5 for b.
+    assert status.tokens == 30 + 17
+
+
+async def test_nothing_downstream_sees_an_output_before_it_is_accepted(board):
+    await board.submit([spec("a"), spec("b", None, "a")], supervised=True, review=True)
+    seen: dict[str, dict[str, str]] = {}
+
+    async def handler(subgoal, inputs):
+        seen[subgoal.id] = inputs
+        return WorkResult(f"{subgoal.id} attempt {subgoal.attempts}")
+
+    await run_supervised(board, handler, checker=ScriptedChecker({"a": [DRIFTED]}))
+
+    assert seen["b"] == {"a": "a attempt 2"}
+
+
+async def test_a_second_drifted_output_is_kept_and_flagged_rather_than_retried_again(board):
+    await board.submit([spec("a")], supervised=True, review=True)
+    checker = ScriptedChecker({"a": [DRIFTED, DRIFTED]})
+
+    status = await run_supervised(board, Attempts(), checker=checker)
+
+    assert status.state == RunState.COMPLETED
+    assert (await board.get("a")).output == "a attempt 2"
+    flagged = [e for e in await board.interventions() if e["type"] == "supervisor.flagged"]
+    assert [e["action"] for e in flagged] == ["retried", "kept"]
+
+
+async def test_drifted_output_fails_the_subgoal_when_it_is_out_of_attempts(board):
+    await board.submit([spec("a"), spec("b", None, "a")], supervised=True, review=True)
+    checker = ScriptedChecker({"a": [DRIFTED, DRIFTED, DRIFTED]})
+
+    status = await run_supervised(board, Attempts(), checker=checker, max_rejections=5)
+
+    assert status.state == RunState.FAILED
+    a = await board.get("a")
+    assert a.state == State.FAILED and a.attempts == 3
+    assert a.error == "off-task output: it is about wind, not solar"
+    assert a.output is None
+    assert (await board.get("b")).state == State.FAILED
+
+
+async def test_output_for_a_vague_subgoal_is_kept_and_marked_for_clarification(board):
+    await board.submit([spec("a")], supervised=True, review=True)
+    unclear = DriftVerdict(Outcome.UNCLEAR, "the subgoal does not say what to look for")
+
+    status = await run_supervised(board, Attempts(), checker=ScriptedChecker({"a": [unclear]}))
+
+    assert status.state == RunState.COMPLETED
+    assert (await board.get("a")).attempts == 1
+    types = [e["type"] for e in await board.interventions()]
+    assert types == ["supervisor.needs_clarification"]
+
+
+async def test_run_continues_when_the_reviewer_itself_fails(board):
+    await board.submit([spec("a"), spec("b", None, "a")], supervised=True, review=True)
+
+    class Broken:
+        async def check(self, subgoal, inputs, output):
+            raise RuntimeError("model is down")
+
+    status = await run_supervised(board, Attempts(), checker=Broken())
+
+    assert status.state == RunState.COMPLETED
+    skipped = await board.interventions()
+    assert {e["type"] for e in skipped} == {"supervisor.review_skipped"}
+    assert "model is down" in skipped[0]["reason"]
+
+
+async def test_reused_duplicate_is_not_reviewed_a_second_time(board):
+    graph = [spec("a", "look up solar"), spec("b", "Look up solar."), spec("c", None, "a", "b")]
+    await board.submit(graph, supervised=True, review=True)
+    checker = ScriptedChecker()
+
+    status = await run_supervised(board, Recorder(), checker=checker)
+
+    assert status.state == RunState.COMPLETED
+    assert sorted(subgoal_id for subgoal_id, _ in checker.seen) == ["a", "c"]
+    assert (await board.get("b")).reused_from == "a"
+
+
+async def test_slow_reviews_run_side_by_side_and_do_not_delay_lease_reclaim(board):
+    await board.submit([spec("a"), spec("b"), spec("c")], supervised=True, review=True)
+    in_review = 0
+    most_at_once = 0
+
+    class Slow:
+        async def check(self, subgoal, inputs, output):
+            nonlocal in_review, most_at_once
+            in_review += 1
+            most_at_once = max(most_at_once, in_review)
+            await asyncio.sleep(0.3)
+            in_review -= 1
+            return DriftVerdict(Outcome.ON_TASK)
+
+    status = await run_supervised(board, Recorder(), checker=Slow())
+
+    assert status.state == RunState.COMPLETED
+    assert most_at_once == 3
+
+
+async def test_restarted_supervisor_reviews_an_output_the_last_one_left_waiting(board):
+    await board.submit([spec("a"), spec("b", None, "a")], supervised=True, review=True)
+    started = asyncio.Event()
+
+    class Stuck:
+        async def check(self, subgoal, inputs, output):
+            started.set()
+            await asyncio.sleep(3600)
+
+    pool = asyncio.create_task(WorkerPool(board, Recorder(), size=2, poll_interval=0.01).run())
+    first = asyncio.create_task(Supervisor(board, tick=0.05, checker=Stuck()).run())
+    async with asyncio.timeout(5):
+        await started.wait()
+    first.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await first
+    assert (await board.get("a")).state == State.REVIEWING
+
+    async with asyncio.timeout(10):
+        await Supervisor(board, tick=0.05, checker=ScriptedChecker()).run()
+        status = await pool
+
+    assert status.state == RunState.COMPLETED
+
+
+async def test_review_needs_a_supervised_run(board):
+    with pytest.raises(ValueError, match="supervised"):
+        await board.submit([spec("a")], review=True)

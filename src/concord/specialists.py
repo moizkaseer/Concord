@@ -49,6 +49,11 @@ def _prompt(question: str, subgoal: Subgoal, inputs: dict[str, str], extra: str 
     parts += [f"Input from {dep}:\n{text}" for dep, text in inputs.items()]
     if extra:
         parts.append(extra)
+    if subgoal.feedback:
+        parts.append(
+            "A reviewer sent back an earlier attempt at this part because it did not do "
+            f"what the part asks: {subgoal.feedback}\nMake sure this attempt does."
+        )
     return "\n\n".join(parts)
 
 

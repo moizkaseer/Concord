@@ -10,6 +10,7 @@ class State(StrEnum):
     CHECKING = "checking"  # dependencies done, waiting for the supervisor's check
     READY = "ready"  # in the queue, waiting for a worker
     LEASED = "leased"  # a worker holds it
+    REVIEWING = "reviewing"  # a worker finished it; waiting for the supervisor's drift check
     DONE = "done"
     FAILED = "failed"
 
@@ -40,6 +41,8 @@ class Subgoal(SubgoalSpec):
     output: str | None = None
     error: str | None = None
     reused_from: str | None = None  # set when the supervisor copied another subgoal's output
+    rejections: int = 0  # outputs the drift check sent back
+    feedback: str | None = None  # why the last output was sent back, for the next attempt
     # Trace context, as W3C traceparent strings.
     parent_span: str | None = None  # the run's root span; this subgoal's spans go under it
     span: str | None = None  # the span that finished this subgoal; dependents link to it

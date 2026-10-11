@@ -86,3 +86,15 @@ async def test_unknown_specialist_fails_the_attempt():
 
     with pytest.raises(ValueError, match="no specialist named 'general'"):
         await specialist_handler(client, QUESTION)(subgoal("general"), {})
+
+
+async def test_a_retry_is_told_why_the_earlier_attempt_was_sent_back():
+    client = Recorder(Completion("Leases expire.", 100, 20))
+    retry = subgoal("research").model_copy(update={"feedback": "it described tracing instead"})
+
+    await specialist_handler(client, QUESTION)(subgoal("research"), {})
+    await specialist_handler(client, QUESTION)(retry, {})
+
+    first, second = (request["prompt"] for request in client.requests)
+    assert "reviewer" not in first
+    assert "it described tracing instead" in second

@@ -2,7 +2,8 @@
 
 Layout for one run (`p` is the run's key prefix):
 
-    p:run              hash    state, total, done, failed, tokens, max_attempts, supervised, span
+    p:run              hash    state, total, done, failed, tokens, max_attempts, supervised,
+                               review, span
     p:sg:<id>          hash    one subgoal record
     p:dependents:<id>  set     ids that depend on <id>
     p:ready            list    ids waiting for a worker
@@ -160,10 +161,16 @@ _COMPLETE = """
 local p, id, worker, output, tokens = ARGV[1], ARGV[2], ARGV[3], ARGV[4], tonumber(ARGV[5])
 local span = ARGV[6]
 if not holds_lease(p, id, worker) then return 0 end
-redis.call('HSET', p .. 'sg:' .. id, 'state', 'done', 'output', output, 'span', span)
 clear_lease(p, id)
-redis.call('HINCRBY', p .. 'run', 'done', 1)
 redis.call('HINCRBY', p .. 'run', 'tokens', tokens)
+if redis.call('HGET', p .. 'run', 'review') == '1' then
+  -- Dependents stay blocked until the supervisor has accepted the output.
+  redis.call('HSET', p .. 'sg:' .. id, 'state', 'reviewing', 'output', output, 'span', span)
+  log(p, 'type', 'subgoal.reviewing', 'id', id, 'worker', worker, 'tokens', tokens)
+  return 1
+end
+redis.call('HSET', p .. 'sg:' .. id, 'state', 'done', 'output', output, 'span', span)
+redis.call('HINCRBY', p .. 'run', 'done', 1)
 log(p, 'type', 'subgoal.done', 'id', id, 'worker', worker, 'tokens', tokens)
 release_dependents(p, id)
 finish_if_terminal(p)
@@ -197,6 +204,47 @@ log(p, 'type', 'supervisor.reused', 'id', id, 'source', source, 'reason', reason
 release_dependents(p, id)
 finish_if_terminal(p)
 return 1
+"""
+
+# `note` is an optional supervisor event recorded with the acceptance: the check could not
+# run, the subgoal was too vague to judge, or the output was kept despite being flagged.
+_ACCEPT = """
+local p, id, tokens, note, reason = ARGV[1], ARGV[2], tonumber(ARGV[3]), ARGV[4], ARGV[5]
+local key = p .. 'sg:' .. id
+if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return 0 end
+if redis.call('HGET', key, 'state') ~= 'reviewing' then return 0 end
+redis.call('HINCRBY', p .. 'run', 'tokens', tokens)
+if note ~= '' then
+  log(p, 'type', note, 'id', id, 'reason', reason, 'action', 'kept')
+end
+redis.call('HSET', key, 'state', 'done')
+redis.call('HINCRBY', p .. 'run', 'done', 1)
+log(p, 'type', 'subgoal.done', 'id', id, 'tokens', tokens)
+release_dependents(p, id)
+finish_if_terminal(p)
+return 1
+"""
+
+_REJECT = """
+local p, id, tokens, reason = ARGV[1], ARGV[2], tonumber(ARGV[3]), ARGV[4]
+local key = p .. 'sg:' .. id
+if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return false end
+if redis.call('HGET', key, 'state') ~= 'reviewing' then return false end
+redis.call('HINCRBY', p .. 'run', 'tokens', tokens)
+redis.call('HINCRBY', key, 'rejections', 1)
+redis.call('HSET', key, 'feedback', reason)
+redis.call('HDEL', key, 'output', 'span')
+local attempts = tonumber(redis.call('HGET', key, 'attempts'))
+if attempts < tonumber(redis.call('HGET', p .. 'run', 'max_attempts')) then
+  log(p, 'type', 'supervisor.flagged', 'id', id, 'reason', reason, 'attempt', attempts,
+    'action', 'retried')
+  enqueue(p, id)
+  return 'requeued'
+end
+log(p, 'type', 'supervisor.flagged', 'id', id, 'reason', reason, 'attempt', attempts,
+  'action', 'failed')
+fail_tree(p, id, 'off-task output: ' .. reason)
+return 'failed'
 """
 
 _RECLAIM = """
@@ -252,6 +300,8 @@ class Blackboard:
         self._fail = redis.register_script(_LIB + _FAIL)
         self._dispatch = redis.register_script(_LIB + _DISPATCH)
         self._reuse = redis.register_script(_LIB + _REUSE)
+        self._accept = redis.register_script(_LIB + _ACCEPT)
+        self._reject = redis.register_script(_LIB + _REJECT)
         self._reclaim = redis.register_script(_LIB + _RECLAIM)
         self._halt = redis.register_script(_LIB + _HALT)
 
@@ -262,6 +312,7 @@ class Blackboard:
         specs: Sequence[SubgoalSpec],
         *,
         supervised: bool = False,
+        review: bool = False,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         max_subgoals: int = DEFAULT_MAX_SUBGOALS,
         max_depth: int = DEFAULT_MAX_DEPTH,
@@ -270,7 +321,11 @@ class Blackboard:
 
         With `supervised=True` each subgoal waits for a supervisor's check before it
         reaches the worker queue, so a supervisor must be running for the run to progress.
+        With `review=True` as well, each finished output waits for the supervisor's drift
+        check before the subgoals depending on it are released.
         """
+        if review and not supervised:
+            raise ValueError("review needs a supervised run: the supervisor does the reviewing")
         validate_graph(specs, max_subgoals=max_subgoals, max_depth=max_depth)
         if await self._redis.exists(self._p + "run"):
             raise RunExistsError(f"run {self.run_id!r} already has a graph")
@@ -279,10 +334,16 @@ class Blackboard:
         # caller can wrap the whole run in a single root span.
         enclosing = current_traceparent()
         with self._write("submit"):
-            await self._store(specs, supervised, max_attempts, enclosing or current_traceparent())
+            span = enclosing or current_traceparent()
+            await self._store(specs, supervised, review, max_attempts, span)
 
     async def _store(
-        self, specs: Sequence[SubgoalSpec], supervised: bool, max_attempts: int, span: str
+        self,
+        specs: Sequence[SubgoalSpec],
+        supervised: bool,
+        review: bool,
+        max_attempts: int,
+        span: str,
     ) -> None:
         root_state = State.CHECKING if supervised else State.READY
         async with self._redis.pipeline(transaction=True) as pipe:
@@ -296,6 +357,7 @@ class Blackboard:
                     "tokens": 0,
                     "max_attempts": max_attempts,
                     "supervised": int(supervised),
+                    "review": int(review),
                     "span": span,
                 },
             )
@@ -339,6 +401,8 @@ class Blackboard:
             output=record.get("output"),
             error=record.get("error"),
             reused_from=record.get("reused_from"),
+            rejections=int(record.get("rejections", 0)),
+            feedback=record.get("feedback"),
             parent_span=record.get("parent_span") or None,
             span=record.get("span") or None,
         )
@@ -427,6 +491,25 @@ class Blackboard:
         span = current_traceparent()
         with self._write("reuse", subgoal_id):
             return bool(await self._reuse(args=[self._p, subgoal_id, source_id, reason, span]))
+
+    async def accept(
+        self, subgoal_id: str, *, tokens: int = 0, note: str = "", reason: str = ""
+    ) -> bool:
+        """Pass a reviewed output and release its dependents. `tokens` is what the review
+        cost. `note` names a supervisor event to record with it, such as an output kept
+        despite being flagged. False if the subgoal was not waiting for review.
+        """
+        with self._write("accept", subgoal_id):
+            return bool(await self._accept(args=[self._p, subgoal_id, tokens, note, reason]))
+
+    async def reject(self, subgoal_id: str, reason: str, *, tokens: int = 0) -> bool | None:
+        """Send a reviewed output back. The subgoal is retried with `reason` as feedback,
+        or fails if it is out of attempts. Returns True when it was requeued, False when
+        it failed, None when it was not waiting for review.
+        """
+        with self._write("reject", subgoal_id):
+            outcome = await self._reject(args=[self._p, subgoal_id, tokens, reason])
+        return None if outcome is None else outcome == "requeued"
 
     async def reclaim_expired(self) -> list[Reclaimed]:
         """Requeue (or fail, if out of attempts) every subgoal whose lease has expired."""
