@@ -121,11 +121,12 @@ async def test_subgoal_out_of_attempts_fails_with_everything_that_depends_on_it(
 async def test_expired_lease_is_reclaimed(board):
     await board.submit([spec("a")])
     await board.lease("w1", ttl=0.05)
-    assert await board.reclaim_expired() == 0  # not expired yet
+    assert await board.reclaim_expired() == []  # not expired yet
 
     await asyncio.sleep(0.1)
 
-    assert await board.reclaim_expired() == 1
+    reclaimed = await board.reclaim_expired()
+    assert [(r.id, r.worker, r.attempt, r.requeued) for r in reclaimed] == [("a", "w1", 1, True)]
     assert (await board.get("a")).state == State.READY
     assert not await board.complete("a", "w1", "late")  # the old worker lost the lease
 

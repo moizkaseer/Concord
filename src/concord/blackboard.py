@@ -2,7 +2,7 @@
 
 Layout for one run (`p` is the run's key prefix):
 
-    p:run              hash    state, total, done, failed, tokens, max_attempts, supervised
+    p:run              hash    state, total, done, failed, tokens, max_attempts, supervised, span
     p:sg:<id>          hash    one subgoal record
     p:dependents:<id>  set     ids that depend on <id>
     p:ready            list    ids waiting for a worker
@@ -19,12 +19,14 @@ names from the prefix, which works on a single Redis node but not on Redis Clust
 
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
 from concord.graph import DEFAULT_MAX_DEPTH, DEFAULT_MAX_SUBGOALS, validate_graph
 from concord.models import RunState, RunStatus, State, Subgoal, SubgoalSpec
+from concord.tracing import RUN_ID, SUBGOAL_ID, concord_span, current_traceparent
 
 DEFAULT_MAX_ATTEMPTS = 3
 
@@ -117,9 +119,10 @@ local function retry_or_fail(p, id, err, retry_event, worker)
   if attempts < max then
     log(p, 'type', retry_event, 'id', id, 'reason', err, 'attempt', attempts, 'worker', worker)
     enqueue(p, id)
-  else
-    fail_tree(p, id, err)
+    return 'requeued'
   end
+  fail_tree(p, id, err)
+  return 'failed'
 end
 
 local function holds_lease(p, id, worker)
@@ -134,8 +137,10 @@ if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return false end
 local id = redis.call('RPOP', p .. 'ready')
 if not id then return false end
 local key = p .. 'sg:' .. id
-local expires = now_ms() + ttl
-redis.call('HSET', key, 'state', 'leased', 'lease_owner', worker, 'lease_expires_at', expires)
+local now = now_ms()
+local expires = now + ttl
+redis.call('HSET', key, 'state', 'leased', 'lease_owner', worker,
+  'leased_at', now, 'lease_expires_at', expires)
 local attempt = redis.call('HINCRBY', key, 'attempts', 1)
 redis.call('ZADD', p .. 'leases', expires, id)
 log(p, 'type', 'subgoal.leased', 'id', id, 'worker', worker, 'attempt', attempt)
@@ -153,8 +158,9 @@ return 1
 
 _COMPLETE = """
 local p, id, worker, output, tokens = ARGV[1], ARGV[2], ARGV[3], ARGV[4], tonumber(ARGV[5])
+local span = ARGV[6]
 if not holds_lease(p, id, worker) then return 0 end
-redis.call('HSET', p .. 'sg:' .. id, 'state', 'done', 'output', output)
+redis.call('HSET', p .. 'sg:' .. id, 'state', 'done', 'output', output, 'span', span)
 clear_lease(p, id)
 redis.call('HINCRBY', p .. 'run', 'done', 1)
 redis.call('HINCRBY', p .. 'run', 'tokens', tokens)
@@ -180,12 +186,12 @@ return 1
 """
 
 _REUSE = """
-local p, id, source, reason = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
+local p, id, source, reason, span = ARGV[1], ARGV[2], ARGV[3], ARGV[4], ARGV[5]
 local key = p .. 'sg:' .. id
 if redis.call('HGET', key, 'state') ~= 'checking' then return 0 end
 local src = redis.call('HMGET', p .. 'sg:' .. source, 'state', 'output')
 if src[1] ~= 'done' then return 0 end
-redis.call('HSET', key, 'state', 'done', 'output', src[2], 'reused_from', source)
+redis.call('HSET', key, 'state', 'done', 'output', src[2], 'reused_from', source, 'span', span)
 redis.call('HINCRBY', p .. 'run', 'done', 1)
 log(p, 'type', 'supervisor.reused', 'id', id, 'source', source, 'reason', reason)
 release_dependents(p, id)
@@ -195,13 +201,16 @@ return 1
 
 _RECLAIM = """
 local p = ARGV[1]
-if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return 0 end
+local reclaimed = {}
+if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return reclaimed end
 local expired = redis.call('ZRANGEBYSCORE', p .. 'leases', '-inf', now_ms())
 for _, id in ipairs(expired) do
-  local worker = redis.call('HGET', p .. 'sg:' .. id, 'lease_owner') or ''
-  retry_or_fail(p, id, 'lease expired', 'supervisor.requeued', worker)
+  local cur = redis.call('HMGET', p .. 'sg:' .. id, 'lease_owner', 'attempts', 'leased_at')
+  local worker = cur[1] or ''
+  local outcome = retry_or_fail(p, id, 'lease expired', 'supervisor.requeued', worker)
+  reclaimed[#reclaimed + 1] = {id, worker, cur[2], cur[3] or '0', outcome}
 end
-return #expired
+return reclaimed
 """
 
 _HALT = """
@@ -211,6 +220,17 @@ redis.call('HSET', p .. 'run', 'state', 'failed', 'reason', reason)
 log(p, 'type', 'supervisor.halted', 'reason', reason)
 return 1
 """
+
+
+@dataclass(frozen=True)
+class Reclaimed:
+    """A subgoal taken back from a worker whose lease expired."""
+
+    id: str
+    worker: str
+    attempt: int
+    leased_at_ms: int
+    requeued: bool  # False when it was out of attempts and failed instead
 
 
 class RunExistsError(RuntimeError):
@@ -255,6 +275,15 @@ class Blackboard:
         if await self._redis.exists(self._p + "run"):
             raise RunExistsError(f"run {self.run_id!r} already has a graph")
 
+        # Every span of the run hangs off the caller's span when there is one, so the
+        # caller can wrap the whole run in a single root span.
+        enclosing = current_traceparent()
+        with self._write("submit"):
+            await self._store(specs, supervised, max_attempts, enclosing or current_traceparent())
+
+    async def _store(
+        self, specs: Sequence[SubgoalSpec], supervised: bool, max_attempts: int, span: str
+    ) -> None:
         root_state = State.CHECKING if supervised else State.READY
         async with self._redis.pipeline(transaction=True) as pipe:
             pipe.hset(
@@ -267,6 +296,7 @@ class Blackboard:
                     "tokens": 0,
                     "max_attempts": max_attempts,
                     "supervised": int(supervised),
+                    "span": span,
                 },
             )
             pipe.xadd(self._events, {"type": "run.submitted", "total": len(specs)})
@@ -280,6 +310,7 @@ class Blackboard:
                         "state": root_state if is_root else State.PENDING,
                         "unmet": len(spec.depends_on),
                         "attempts": 0,
+                        "parent_span": span,
                     },
                 )
                 for dep in spec.depends_on:
@@ -306,6 +337,8 @@ class Blackboard:
             output=record.get("output"),
             error=record.get("error"),
             reused_from=record.get("reused_from"),
+            parent_span=record.get("parent_span") or None,
+            span=record.get("span") or None,
         )
 
     async def outputs(self, subgoal_ids: Sequence[str]) -> dict[str, str]:
@@ -315,6 +348,14 @@ class Blackboard:
                 pipe.hget(self._p + "sg:" + subgoal_id, "output")
             values = await pipe.execute()
         return {i: v for i, v in zip(subgoal_ids, values, strict=True) if v is not None}
+
+    async def spans(self, subgoal_ids: Sequence[str]) -> dict[str, str]:
+        """Trace context of the span that finished each subgoal, where one was recorded."""
+        async with self._redis.pipeline(transaction=False) as pipe:
+            for subgoal_id in subgoal_ids:
+                pipe.hget(self._p + "sg:" + subgoal_id, "span")
+            values = await pipe.execute()
+        return {i: v for i, v in zip(subgoal_ids, values, strict=True) if v}
 
     async def status(self) -> RunStatus:
         record = await self._redis.hgetall(self._p + "run")
@@ -327,6 +368,7 @@ class Blackboard:
             failed=int(record["failed"]),
             tokens=int(record["tokens"]),
             reason=record.get("reason"),
+            span=record.get("span") or None,
         )
 
     async def events(self) -> list[dict[str, str]]:
@@ -356,34 +398,53 @@ class Blackboard:
 
         False means this worker no longer holds the lease, and nothing was written.
         """
-        return bool(await self._complete(args=[self._p, subgoal_id, worker, output, tokens]))
+        # Dependents link to the span that is active now (the attempt), not to the
+        # short write span opened below.
+        span = current_traceparent()
+        with self._write("complete", subgoal_id):
+            return bool(
+                await self._complete(args=[self._p, subgoal_id, worker, output, tokens, span])
+            )
 
     async def fail(self, subgoal_id: str, worker: str, error: str) -> bool:
         """Report a failed attempt. The subgoal is retried until it runs out of attempts,
         then it and everything depending on it fail. False means the lease was lost.
         """
-        return bool(await self._fail(args=[self._p, subgoal_id, worker, error]))
+        with self._write("fail", subgoal_id):
+            return bool(await self._fail(args=[self._p, subgoal_id, worker, error]))
 
     # --- supervisor operations --------------------------------------------------
 
     async def dispatch(self, subgoal_id: str) -> bool:
         """Send a checked subgoal to the worker queue. False if it was not waiting."""
-        return bool(await self._dispatch(args=[self._p, subgoal_id]))
+        with self._write("dispatch", subgoal_id):
+            return bool(await self._dispatch(args=[self._p, subgoal_id]))
 
     async def reuse(self, subgoal_id: str, source_id: str, reason: str) -> bool:
         """Finish a waiting subgoal with the output of a finished one, without a worker."""
-        return bool(await self._reuse(args=[self._p, subgoal_id, source_id, reason]))
+        span = current_traceparent()
+        with self._write("reuse", subgoal_id):
+            return bool(await self._reuse(args=[self._p, subgoal_id, source_id, reason, span]))
 
-    async def reclaim_expired(self) -> int:
+    async def reclaim_expired(self) -> list[Reclaimed]:
         """Requeue (or fail, if out of attempts) every subgoal whose lease has expired."""
-        return int(await self._reclaim(args=[self._p]))
+        rows = await self._reclaim(args=[self._p])
+        return [
+            Reclaimed(subgoal_id, worker, int(attempt), int(leased_at), outcome == "requeued")
+            for subgoal_id, worker, attempt, leased_at, outcome in rows
+        ]
 
     async def halt(self, reason: str) -> bool:
         """Stop the run. False if it had already ended."""
-        return bool(await self._halt(args=[self._p, reason]))
+        with self._write("halt"):
+            return bool(await self._halt(args=[self._p, reason]))
 
     async def hold(self, subgoal_id: str, source_id: str, reason: str) -> None:
         """Keep a duplicate waiting until the subgoal it matches finishes."""
+        with self._write("hold", subgoal_id):
+            await self._hold(subgoal_id, source_id, reason)
+
+    async def _hold(self, subgoal_id: str, source_id: str, reason: str) -> None:
         async with self._redis.pipeline(transaction=True) as pipe:
             pipe.hset(self._p + "waiters:" + source_id, subgoal_id, reason)
             pipe.xadd(
@@ -458,6 +519,13 @@ class Blackboard:
         await self._redis.xack(self._events, group, seq)
 
     # --- housekeeping -----------------------------------------------------------
+
+    def _write(self, operation: str, subgoal_id: str | None = None):
+        """A span around a write that changes the state of the run."""
+        attributes = {"db.system.name": "redis", RUN_ID: self.run_id}
+        if subgoal_id is not None:
+            attributes[SUBGOAL_ID] = subgoal_id
+        return concord_span(f"blackboard.{operation}", attributes=attributes)
 
     async def log_event(self, type: str, **fields: str) -> None:
         """Append a note to the event stream without changing any state."""

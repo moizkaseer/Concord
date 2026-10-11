@@ -8,6 +8,16 @@ from dataclasses import dataclass
 from concord.blackboard import Blackboard
 from concord.llm import ModelClient
 from concord.models import RunState, RunStatus, Subgoal
+from concord.tracing import (
+    ATTEMPT,
+    RUN_ID,
+    SUBGOAL_ID,
+    TOTAL_TOKENS,
+    WORKER,
+    add_link,
+    agent_span,
+    mark_error,
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +52,7 @@ class WorkerPool:
         lease_ttl: float = 30.0,
         handler_timeout: float = 300.0,
         poll_interval: float = 0.05,
+        agent_name: str = "specialist",
     ) -> None:
         self._board = board
         self._handler = handler
@@ -51,6 +62,7 @@ class WorkerPool:
         # own deadline; lease expiry only catches a worker that has died.
         self._handler_timeout = handler_timeout
         self._poll_interval = poll_interval
+        self._agent_name = agent_name  # names the attempt spans in traces
 
     async def run(self, *, timeout: float | None = None) -> RunStatus:
         """Work the run until it completes or fails, then return its final status."""
@@ -67,17 +79,37 @@ class WorkerPool:
                 continue
             heartbeat = asyncio.create_task(self._keep_lease(subgoal.id, worker))
             try:
-                inputs = await self._board.outputs(subgoal.depends_on)
-                async with asyncio.timeout(self._handler_timeout):
-                    result = await self._handler(subgoal, inputs)
-            except Exception as exc:
-                await self._board.fail(subgoal.id, worker, f"{type(exc).__name__}: {exc}")
-            else:
-                await self._board.complete(subgoal.id, worker, result.output, result.tokens)
+                await self._attempt(subgoal, worker)
             finally:
                 heartbeat.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat
+
+    async def _attempt(self, subgoal: Subgoal, worker: str) -> None:
+        attributes = {
+            RUN_ID: self._board.run_id,
+            SUBGOAL_ID: subgoal.id,
+            ATTEMPT: subgoal.attempts,
+            WORKER: worker,
+        }
+        with agent_span(
+            self._agent_name, parent=subgoal.parent_span, attributes=attributes
+        ) as span:
+            if span.is_recording():
+                # Every attempt sits directly under the run; links to the spans that
+                # finished its dependencies carry the shape of the subgoal graph.
+                for dep_span in (await self._board.spans(subgoal.depends_on)).values():
+                    add_link(span, dep_span)
+            try:
+                inputs = await self._board.outputs(subgoal.depends_on)
+                async with asyncio.timeout(self._handler_timeout):
+                    result = await self._handler(subgoal, inputs)
+            except Exception as exc:
+                mark_error(span, exc)
+                await self._board.fail(subgoal.id, worker, f"{type(exc).__name__}: {exc}")
+            else:
+                span.set_attribute(TOTAL_TOKENS, result.tokens)
+                await self._board.complete(subgoal.id, worker, result.output, result.tokens)
 
     async def _keep_lease(self, subgoal_id: str, worker: str) -> None:
         while True:

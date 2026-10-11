@@ -39,6 +39,9 @@ class Subgoal(SubgoalSpec):
     output: str | None = None
     error: str | None = None
     reused_from: str | None = None  # set when the supervisor copied another subgoal's output
+    # Trace context, as W3C traceparent strings.
+    parent_span: str | None = None  # the run's root span; this subgoal's spans go under it
+    span: str | None = None  # the span that finished this subgoal; dependents link to it
 
 
 class RunStatus(BaseModel):
@@ -48,3 +51,4 @@ class RunStatus(BaseModel):
     failed: int = 0
     tokens: int = 0
     reason: str | None = None  # why the run failed or was halted
+    span: str | None = None  # trace context of the run's root span
