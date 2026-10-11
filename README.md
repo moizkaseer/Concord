@@ -6,9 +6,8 @@ output.
 
 **Status: early development.** The blackboard, scheduler, worker pool, supervisor and
 fault-injection harness and tracing work and are measured against a mock model. The planner,
-specialists and Claude client are built and tested against fakes, but **have not yet been
-run against the real API**, so there are no real-question results yet. The drift check is
-not built.
+specialists and Claude client have run on 19 real questions with Claude Sonnet 5.5; see
+[Results on real questions](#results-on-real-questions). The drift check is not built.
 See [ROADMAP.md](ROADMAP.md) for the build plan.
 
 ## What works today
@@ -111,24 +110,55 @@ Two gaps are visible and left in on purpose:
 Reproduce it with `uv run python -m concord.harness`. CI runs the same command with
 `--check`, which fails the build if a gate for an already-built detector regresses.
 
-## Running on real questions
+## Results on real questions
 
-`evals/questions.json` holds 20 research questions. The evaluation answers each one with the
-agent team and with a single agent that has the same tools, then records cost, time and a
-blind comparison of the two answers.
+`evals/questions.json` holds 20 research questions. Each was answered by the agent team and
+by a single agent with the same tools (web search and the same local documents), on Claude
+Sonnet 5.5 at medium effort. 19 of the 20 ran; the last one failed for both systems because
+the API account ran out of credit, not because of anything in Concord.
+
+| Across the 19 questions | Single agent | Team |
+|-------------------------|--------------|------|
+| Finished | 19 | 19 |
+| Token cost, total | $2.13 | $6.16 |
+| Median time per question | 26s | 48s |
+| Web searches, total | 69 | 189 |
+| Judged the better answer | 6 | 12 (1 tie) |
+
+How to read this:
+
+- **The team costs about 2.9 times as much and takes about 1.8 times as long.** It plans 3
+  to 5 subgoals per question and each research subgoal runs its own searches.
+- **The team's answer was preferred 12 times to 6.** That comparison is made blind by the
+  same model, not by a person, and the team's answers are longer, which model judges are
+  known to favour. Treat it as a signal that the extra searching finds more, not as proof.
+- **The supervisor did nothing on any of these runs.** No worker died and the planner never
+  asked for the same thing twice, so there was nothing to catch. The supervisor's value is
+  what the [scorecard](#scorecard) measures under injected faults; on healthy runs it is
+  only overhead.
+- Costs are token spend only. Web search fees are billed separately.
+
+The local documents the questions draw on are a frozen copy of this project's docs in
+`evals/corpus/`, taken when the questions were run.
+
+Every model reply from the run is saved in `evals/recording.json`, and the full answers in
+`evals/results/sonnet-5-5.json`. Replaying the recording reproduces all 19 results exactly,
+in about ten seconds and without an API key:
+
+```sh
+uv run python -m concord.evals --replay evals/recording.json --limit 19
+```
+
+To run it against the API yourself:
 
 ```sh
 export ANTHROPIC_API_KEY=...
 uv run python -m concord.evals --limit 1 --yes                      # try one question
 uv run python -m concord.evals --yes --record evals/recording.json  # all 20
-uv run python -m concord.evals --replay evals/recording.json        # rerun for free
 ```
 
-It uses Claude Sonnet 5.5 at medium effort by default; `--model` and `--effort` change
-that. It spends real money, so it refuses to start without `--yes` and stops starting new
-questions at `--max-cost` (default $25 of token spend; web search fees are extra). The
-answer comparison is made by the same model, not by a person, so treat it as a signal
-rather than a verdict. This has not been run yet.
+It refuses to start without `--yes` and stops starting new questions at `--max-cost`
+(default $25 of token spend). `--model` and `--effort` change the model.
 
 ## Quick start
 

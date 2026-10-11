@@ -32,6 +32,13 @@ Build in this order. Each phase ends with a test that must pass before the next 
   specialist needs branching.
 - **Scope: 5 to 20 subgoals, parallel readers, one writer.**
 
+## Real questions
+
+19 of 20 questions answered on Claude Sonnet 5.5 (the 20th failed when the API account ran
+out of credit). The team cost $6.16 in tokens against $2.13 for a single agent, took a
+median 48s against 26s, and was judged the better answer 12 times to 6 with 1 tie by a
+same-model blind comparison. The supervisor made no interventions on these healthy runs.
+
 ## Scorecard
 
 Measured by `uv run python -m concord.harness` on a mock model (72 scenarios). Targets are
