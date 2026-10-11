@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "A reliability layer for multi-agent runs: shared blackboard, scheduler and a supervisor that catches stalls, repeated work and task drift."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2",
+    "redis>=5",
+]
 
 [dependency-groups]
 dev = [
