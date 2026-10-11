@@ -1,7 +1,7 @@
 """Model client interface, plus a scripted mock so tests are deterministic and free."""
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -9,10 +9,25 @@ class Completion:
     text: str
     input_tokens: int
     output_tokens: int
+    sources: tuple[str, ...] = ()  # URLs the model read through web search
+    searches: int = 0  # web searches the model ran
 
 
 class ModelClient(Protocol):
-    async def complete(self, prompt: str, *, system: str | None = None) -> Completion: ...
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        schema: dict[str, Any] | None = None,
+        web_search: bool = False,
+    ) -> Completion:
+        """Run one model turn.
+
+        `schema` is a JSON Schema the reply text must conform to. `web_search` lets the
+        model search the web before answering.
+        """
+        ...
 
 
 class MockModelClient:
@@ -28,7 +43,14 @@ class MockModelClient:
         self._default = default
         self.calls: list[str] = []
 
-    async def complete(self, prompt: str, *, system: str | None = None) -> Completion:
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        schema: dict[str, Any] | None = None,
+        web_search: bool = False,
+    ) -> Completion:
         self.calls.append(prompt)
         text = self._reply(prompt)
         # Word counts stand in for tokens so budget logic has something to add up.

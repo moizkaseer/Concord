@@ -5,6 +5,7 @@ description = "A reliability layer for multi-agent runs: shared blackboard, sche
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=1.13.0",
     "opentelemetry-api>=1.30",
     "opentelemetry-exporter-otlp-proto-http>=1.30",
     "opentelemetry-sdk>=1.30",

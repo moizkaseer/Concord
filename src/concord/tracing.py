@@ -30,6 +30,7 @@ SDK setup) installs a tracer provider, every span is a no-op.
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.context import Context
@@ -191,11 +192,23 @@ class TracedModelClient:
         self._attributes = {OPERATION: "chat", PROVIDER: provider, REQUEST_MODEL: model}
         self._name = f"chat {model}"
 
-    async def complete(self, prompt: str, *, system: str | None = None) -> Completion:
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        schema: dict[str, Any] | None = None,
+        web_search: bool = False,
+    ) -> Completion:
         with _span(self._name, kind=SpanKind.CLIENT, attributes=self._attributes) as span:
-            completion = await self._client.complete(prompt, system=system)
+            completion = await self._client.complete(
+                prompt, system=system, schema=schema, web_search=web_search
+            )
             span.set_attribute(INPUT_TOKENS, completion.input_tokens)
             span.set_attribute(OUTPUT_TOKENS, completion.output_tokens)
+            if web_search:
+                # Web search runs inside the API call, so it cannot have its own span.
+                span.set_attribute("concord.web_search.requests", completion.searches)
             return completion
 
 
