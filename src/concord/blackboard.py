@@ -456,3 +456,15 @@ class Blackboard:
 
     async def ack(self, group: str, seq: str) -> None:
         await self._redis.xack(self._events, group, seq)
+
+    # --- housekeeping -----------------------------------------------------------
+
+    async def log_event(self, type: str, **fields: str) -> None:
+        """Append a note to the event stream without changing any state."""
+        await self._redis.xadd(self._events, {"type": type, **fields})
+
+    async def destroy(self) -> None:
+        """Delete every key of this run."""
+        keys = [key async for key in self._redis.scan_iter(match=self._p + "*", count=500)]
+        if keys:
+            await self._redis.delete(*keys)
