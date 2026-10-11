@@ -5,8 +5,10 @@ them from a shared blackboard, and a supervisor catches stalls, repeated work an
 output.
 
 **Status: early development.** The blackboard, scheduler, worker pool, supervisor and
-fault-injection harness and tracing work against a mock model. Real model calls and the
-drift check are not built yet.
+fault-injection harness and tracing work and are measured against a mock model. The planner,
+specialists and Claude client are built and tested against fakes, but **have not yet been
+run against the real API**, so there are no real-question results yet. The drift check is
+not built.
 See [ROADMAP.md](ROADMAP.md) for the build plan.
 
 ## What works today
@@ -32,6 +34,14 @@ See [ROADMAP.md](ROADMAP.md) for the build plan.
   the GenAI semantic conventions. An attempt lost to a dead worker is recorded by the
   supervisor, so the failure, the requeue and the retry all show up. See
   [docs/tracing.md](docs/tracing.md).
+
+- **Planner**: asks the model for a subgoal graph as structured output, checks it (no
+  cycles, exactly one writer, no work that reaches no answer) and sends a rejected plan
+  back once with the reason.
+- **Specialists**: research (web search), retrieval (keyword search over local documents)
+  and synthesis, the only one that writes the final answer.
+- **Claude client**: retries, timeouts, token accounting, web search and structured output.
+  Replies can be recorded to a file and replayed without the model.
 
 Similarity matching currently ships with a word-overlap embedder for tests. It catches
 reordered or lightly edited subgoals, not true paraphrases; those need a real embedding
@@ -101,6 +111,24 @@ Two gaps are visible and left in on purpose:
 Reproduce it with `uv run python -m concord.harness`. CI runs the same command with
 `--check`, which fails the build if a gate for an already-built detector regresses.
 
+## Running on real questions
+
+`evals/questions.json` holds 20 research questions. The evaluation answers each one with the
+agent team and with a single agent that has the same tools, then records cost, time and a
+blind comparison of the two answers.
+
+```sh
+export ANTHROPIC_API_KEY=...
+uv run python -m concord.evals --limit 1 --yes                      # try one question
+uv run python -m concord.evals --yes --record evals/recording.json  # all 20
+uv run python -m concord.evals --replay evals/recording.json        # rerun for free
+```
+
+It spends real money, so it refuses to start without `--yes` and stops starting new
+questions at `--max-cost` (default $25 of token spend; web search fees are extra). The
+answer comparison is made by the same model, not by a person, so treat it as a signal
+rather than a verdict. This has not been run yet.
+
 ## Quick start
 
 Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and Docker.
@@ -118,6 +146,7 @@ uv run python -m concord.harness   # print the scorecard
 ```
 src/concord/   library code
 examples/      runnable examples
+evals/         the 20 evaluation questions and their results
 docs/          tracing guide
 tests/         tests (mock model, no API key needed; blackboard tests need Redis running)
 ```
