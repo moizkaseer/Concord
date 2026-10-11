@@ -1,9 +1,10 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from concord.corpus import Corpus, Passage
-from concord.evals.__main__ import report
+from concord.evals.__main__ import CORPUS_DESCRIPTION, CORPUS_FILES, report
 from concord.evals.runner import (
     JUDGE_SCHEMA,
     Meter,
@@ -157,3 +158,32 @@ async def test_a_recorded_evaluation_replays_without_the_model(redis, tmp_path):
     assert replayed.single.text == recorded.single.text
     assert replayed.verdict.winner == recorded.verdict.winner
     assert replayed.team.input_tokens == recorded.team.input_tokens
+
+
+async def test_real_recorded_questions_replay_to_the_recorded_results(redis):
+    """Replays replies recorded from Claude Sonnet 5.5, so this runs the real pipeline
+    on real model output without calling the API."""
+    recorded = {
+        r["id"]: r for r in json.loads(Path("evals/results/sonnet-5-5.json").read_text())["results"]
+    }
+    questions = json.loads(Path("evals/questions.json").read_text())
+    client = ReplayClient("evals/recording.json")
+    corpus = Corpus.from_files(CORPUS_FILES)
+
+    # One web-only question and one that also uses the local documents.
+    for item in (q for q in questions if q["id"] in ("fencing-tokens", "concord-known-limits")):
+        result = await evaluate(
+            redis,
+            client,
+            item["id"],
+            item["question"],
+            corpus,
+            corpus_description=CORPUS_DESCRIPTION,
+        )
+
+        expected = recorded[item["id"]]
+        assert result.team.completed and result.single.completed
+        assert result.team.text == expected["team"]["text"]
+        assert result.single.text == expected["single"]["text"]
+        assert result.verdict.winner == expected["verdict"]["winner"]
+        assert result.team.input_tokens == expected["team"]["input_tokens"]
