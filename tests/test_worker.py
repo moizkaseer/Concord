@@ -2,7 +2,7 @@ import asyncio
 
 from concord.llm import MockModelClient
 from concord.models import RunState, State, SubgoalSpec
-from concord.worker import WorkerPool, model_handler
+from concord.worker import WorkerPool, WorkResult, model_handler
 
 
 def spec(id: str, *deps: str) -> SubgoalSpec:
@@ -72,18 +72,55 @@ async def test_handler_error_fails_the_run_and_stops_the_pool(board):
     async def handler(subgoal, inputs):
         raise ValueError("bad input")
 
-    await board.submit([spec("a"), spec("b", "a")])
+    await board.submit([spec("a"), spec("b", "a")], max_attempts=2)
     status = await WorkerPool(board, handler, size=2, poll_interval=0.01).run(timeout=10)
 
     assert status.state == RunState.FAILED
-    assert (await board.get("a")).error == "ValueError: bad input"
-    assert (await board.get("b")).state == State.PENDING
+    failed = await board.get("a")
+    assert failed.attempts == 2
+    assert failed.error == "ValueError: bad input"
+    assert (await board.get("b")).state == State.FAILED
+
+
+async def test_failed_attempt_is_retried_and_the_run_completes(board):
+    calls = 0
+
+    async def handler(subgoal, inputs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ConnectionError("model unavailable")
+        return WorkResult("ok")
+
+    await board.submit([spec("a")])
+    status = await WorkerPool(board, handler, size=1, poll_interval=0.01).run(timeout=10)
+
+    assert status.state == RunState.COMPLETED
+    assert (await board.get("a")).attempts == 2
+
+
+async def test_hung_handler_times_out_and_is_retried(board):
+    calls = 0
+
+    async def handler(subgoal, inputs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await asyncio.sleep(3600)
+        return WorkResult("ok")
+
+    await board.submit([spec("a")])
+    pool = WorkerPool(board, handler, size=1, handler_timeout=0.1, poll_interval=0.01)
+    status = await pool.run(timeout=10)
+
+    assert status.state == RunState.COMPLETED
+    assert (await board.get("a")).attempts == 2
 
 
 async def test_long_handler_keeps_its_lease_through_heartbeats(board):
     async def handler(subgoal, inputs):
         await asyncio.sleep(0.5)  # longer than the lease, so only heartbeats keep it
-        return "done"
+        return WorkResult("done")
 
     await board.submit([spec("a")])
     pool = WorkerPool(board, handler, size=1, lease_ttl=0.3, poll_interval=0.01)

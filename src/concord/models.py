@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 
 class State(StrEnum):
     PENDING = "pending"  # waiting on dependencies
-    READY = "ready"  # dependencies done, waiting for a worker
+    CHECKING = "checking"  # dependencies done, waiting for the supervisor's check
+    READY = "ready"  # in the queue, waiting for a worker
     LEASED = "leased"  # a worker holds it
     DONE = "done"
     FAILED = "failed"
@@ -37,9 +38,13 @@ class Subgoal(SubgoalSpec):
     lease_expires_at: int | None = None  # Redis server time, milliseconds
     output: str | None = None
     error: str | None = None
+    reused_from: str | None = None  # set when the supervisor copied another subgoal's output
 
 
 class RunStatus(BaseModel):
     state: RunState
     total: int
     done: int
+    failed: int = 0
+    tokens: int = 0
+    reason: str | None = None  # why the run failed or was halted

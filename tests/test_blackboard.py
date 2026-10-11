@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from concord.blackboard import RunExistsError
@@ -86,16 +88,81 @@ async def test_run_completes_when_every_subgoal_is_done(board):
     assert await board.outputs(["a", "b"]) == {"a": "output of a", "b": "output of b"}
 
 
-async def test_fail_marks_subgoal_and_run_failed(board):
-    await board.submit([spec("a")])
+async def test_failed_attempt_is_retried_while_attempts_remain(board):
+    await board.submit([spec("a")], max_attempts=2)
     await board.lease("w1", ttl=30)
 
     assert await board.fail("a", "w1", "boom")
 
-    failed = await board.get("a")
-    assert failed.state == State.FAILED
-    assert failed.error == "boom"
-    assert (await board.status()).state == RunState.FAILED
+    assert (await board.get("a")).state == State.READY
+    assert (await board.status()).state == RunState.RUNNING
+    retried = [e for e in await board.events() if e["type"] == "subgoal.retried"]
+    assert retried[0]["reason"] == "boom"
+
+
+async def test_subgoal_out_of_attempts_fails_with_everything_that_depends_on_it(board):
+    await board.submit([spec("a"), spec("b", "a"), spec("c", "b"), spec("x")], max_attempts=1)
+    first = await board.lease("w1", ttl=30)
+    second = await board.lease("w1", ttl=30)
+    assert {first.id, second.id} == {"a", "x"}
+
+    await board.fail("a", "w1", "boom")
+    assert (await board.status()).state == RunState.RUNNING  # x can still finish
+    await board.complete("x", "w1", "out")
+
+    assert (await board.get("a")).error == "boom"
+    assert (await board.get("b")).error == "dependency a failed"
+    assert (await board.get("c")).error == "dependency b failed"
+    status = await board.status()
+    assert status.state == RunState.FAILED
+    assert (status.done, status.failed) == (1, 3)
+
+
+async def test_expired_lease_is_reclaimed(board):
+    await board.submit([spec("a")])
+    await board.lease("w1", ttl=0.05)
+    assert await board.reclaim_expired() == 0  # not expired yet
+
+    await asyncio.sleep(0.1)
+
+    assert await board.reclaim_expired() == 1
+    assert (await board.get("a")).state == State.READY
+    assert not await board.complete("a", "w1", "late")  # the old worker lost the lease
+
+
+async def test_supervised_run_holds_subgoals_until_dispatched(board):
+    await board.submit([spec("a")], supervised=True)
+
+    assert (await board.get("a")).state == State.CHECKING
+    assert await board.lease("w1", ttl=30) is None
+
+    assert await board.dispatch("a")
+    assert not await board.dispatch("a")  # a second dispatch does nothing
+    assert (await board.lease("w1", ttl=30)).id == "a"
+
+
+async def test_reuse_finishes_a_waiting_subgoal_with_another_ones_output(board):
+    await board.submit([spec("a"), spec("b"), spec("c", "b")], supervised=True)
+    assert not await board.reuse("b", "a", "exact match")  # a has no output yet
+    await board.dispatch("a")
+    await board.lease("w1", ttl=30)
+    await board.complete("a", "w1", "output of a")
+
+    assert await board.reuse("b", "a", "exact match")
+
+    reused = await board.get("b")
+    assert (reused.state, reused.output, reused.reused_from) == (State.DONE, "output of a", "a")
+    assert (await board.get("c")).state == State.CHECKING  # b's dependent is released
+    assert (await board.interventions())[0]["type"] == "supervisor.reused"
+
+
+async def test_complete_adds_tokens_to_the_run(board):
+    await board.submit([spec("a")])
+    await board.lease("w1", ttl=30)
+
+    await board.complete("a", "w1", "out", tokens=42)
+
+    assert (await board.status()).tokens == 42
 
 
 async def test_every_state_change_is_logged_in_order(board):

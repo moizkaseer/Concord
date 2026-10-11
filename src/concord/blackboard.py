@@ -2,12 +2,15 @@
 
 Layout for one run (`p` is the run's key prefix):
 
-    p:run              hash    state, total, done
+    p:run              hash    state, total, done, failed, tokens, max_attempts, supervised
     p:sg:<id>          hash    one subgoal record
     p:dependents:<id>  set     ids that depend on <id>
     p:ready            list    ids waiting for a worker
     p:leases           zset    leased ids scored by lease expiry (ms)
-    p:events           stream  every state change, in order
+    p:events           stream  every state change and supervisor intervention, in order
+    p:dedupe:keys      hash    duplicate key -> id of the subgoal that owns it
+    p:dedupe:vectors   hash    id -> JSON {deps, vector} for similarity matching
+    p:waiters:<id>     hash    duplicates held until <id> finishes -> match reason
 
 State changes run as Lua scripts so each one is atomic: a subgoal can never be leased
 twice, and a state change is never recorded without its event. The scripts build key
@@ -18,22 +21,116 @@ import json
 from collections.abc import Sequence
 
 from redis.asyncio import Redis
+from redis.exceptions import ResponseError
 
 from concord.graph import DEFAULT_MAX_DEPTH, DEFAULT_MAX_SUBGOALS, validate_graph
 from concord.models import RunState, RunStatus, State, Subgoal, SubgoalSpec
 
-# Lease times use the Redis server clock so every worker agrees on what "expired" means.
-_NOW_MS = """
+DEFAULT_MAX_ATTEMPTS = 3
+
+# Shared by every script. Lease times use the Redis server clock so every worker agrees
+# on what "expired" means.
+_LIB = """
 local function now_ms()
   local t = redis.call('TIME')
   return t[1] * 1000 + math.floor(t[2] / 1000)
 end
+
+local function log(p, ...)
+  redis.call('XADD', p .. 'events', '*', ...)
+end
+
+local function enqueue(p, id)
+  redis.call('HSET', p .. 'sg:' .. id, 'state', 'ready')
+  redis.call('LPUSH', p .. 'ready', id)
+  log(p, 'type', 'subgoal.ready', 'id', id)
+end
+
+-- Dependencies are met. A supervised run holds the subgoal for the supervisor's
+-- pre-dispatch check; otherwise it goes straight to the worker queue.
+local function unblock(p, id)
+  if redis.call('HGET', p .. 'run', 'supervised') == '1' then
+    redis.call('HSET', p .. 'sg:' .. id, 'state', 'checking')
+    log(p, 'type', 'subgoal.checking', 'id', id)
+  else
+    enqueue(p, id)
+  end
+end
+
+local function finish_if_terminal(p)
+  local r = redis.call('HMGET', p .. 'run', 'state', 'total', 'done', 'failed')
+  if r[1] ~= 'running' then return end
+  local failed = tonumber(r[4])
+  if tonumber(r[3]) + failed < tonumber(r[2]) then return end
+  if failed == 0 then
+    redis.call('HSET', p .. 'run', 'state', 'completed')
+    log(p, 'type', 'run.completed')
+  else
+    redis.call('HSET', p .. 'run', 'state', 'failed', 'reason', failed .. ' subgoal(s) failed')
+    log(p, 'type', 'run.failed')
+  end
+end
+
+local function release_dependents(p, id)
+  for _, child in ipairs(redis.call('SMEMBERS', p .. 'dependents:' .. id)) do
+    local ckey = p .. 'sg:' .. child
+    local unmet = redis.call('HINCRBY', ckey, 'unmet', -1)
+    if unmet == 0 and redis.call('HGET', ckey, 'state') == 'pending' then
+      unblock(p, child)
+    end
+  end
+end
+
+local function clear_lease(p, id)
+  redis.call('HDEL', p .. 'sg:' .. id, 'lease_owner', 'lease_expires_at')
+  redis.call('ZREM', p .. 'leases', id)
+end
+
+-- Fail a subgoal and everything that can no longer run because of it.
+local function fail_tree(p, id, err)
+  redis.call('HSET', p .. 'sg:' .. id, 'state', 'failed', 'error', err)
+  redis.call('HINCRBY', p .. 'run', 'failed', 1)
+  log(p, 'type', 'subgoal.failed', 'id', id, 'error', err)
+  local stack = {id}
+  while #stack > 0 do
+    local cur = table.remove(stack)
+    for _, child in ipairs(redis.call('SMEMBERS', p .. 'dependents:' .. cur)) do
+      local ckey = p .. 'sg:' .. child
+      local state = redis.call('HGET', ckey, 'state')
+      if state ~= 'failed' and state ~= 'done' then
+        local cerr = 'dependency ' .. cur .. ' failed'
+        redis.call('HSET', ckey, 'state', 'failed', 'error', cerr)
+        redis.call('HINCRBY', p .. 'run', 'failed', 1)
+        log(p, 'type', 'subgoal.failed', 'id', child, 'error', cerr)
+        stack[#stack + 1] = child
+      end
+    end
+  end
+  finish_if_terminal(p)
+end
+
+-- Put a subgoal back in the queue if it has attempts left, otherwise fail it.
+local function retry_or_fail(p, id, err, retry_event, worker)
+  local attempts = tonumber(redis.call('HGET', p .. 'sg:' .. id, 'attempts'))
+  local max = tonumber(redis.call('HGET', p .. 'run', 'max_attempts'))
+  clear_lease(p, id)
+  if attempts < max then
+    log(p, 'type', retry_event, 'id', id, 'reason', err, 'attempt', attempts, 'worker', worker)
+    enqueue(p, id)
+  else
+    fail_tree(p, id, err)
+  end
+end
+
+local function holds_lease(p, id, worker)
+  local cur = redis.call('HMGET', p .. 'sg:' .. id, 'state', 'lease_owner')
+  return cur[1] == 'leased' and cur[2] == worker
+end
 """
 
-_LEASE = (
-    _NOW_MS
-    + """
+_LEASE = """
 local p, worker, ttl = ARGV[1], ARGV[2], tonumber(ARGV[3])
+if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return false end
 local id = redis.call('RPOP', p .. 'ready')
 if not id then return false end
 local key = p .. 'sg:' .. id
@@ -41,64 +138,77 @@ local expires = now_ms() + ttl
 redis.call('HSET', key, 'state', 'leased', 'lease_owner', worker, 'lease_expires_at', expires)
 local attempt = redis.call('HINCRBY', key, 'attempts', 1)
 redis.call('ZADD', p .. 'leases', expires, id)
-redis.call('XADD', p .. 'events', '*',
-  'type', 'subgoal.leased', 'id', id, 'worker', worker, 'attempt', attempt)
+log(p, 'type', 'subgoal.leased', 'id', id, 'worker', worker, 'attempt', attempt)
 return id
 """
-)
 
-_HEARTBEAT = (
-    _NOW_MS
-    + """
+_HEARTBEAT = """
 local p, id, worker, ttl = ARGV[1], ARGV[2], ARGV[3], tonumber(ARGV[4])
-local key = p .. 'sg:' .. id
-local cur = redis.call('HMGET', key, 'state', 'lease_owner')
-if cur[1] ~= 'leased' or cur[2] ~= worker then return 0 end
+if not holds_lease(p, id, worker) then return 0 end
 local expires = now_ms() + ttl
-redis.call('HSET', key, 'lease_expires_at', expires)
+redis.call('HSET', p .. 'sg:' .. id, 'lease_expires_at', expires)
 redis.call('ZADD', p .. 'leases', expires, id)
 return 1
 """
-)
 
 _COMPLETE = """
-local p, id, worker, output = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
-local key = p .. 'sg:' .. id
-local cur = redis.call('HMGET', key, 'state', 'lease_owner')
-if cur[1] ~= 'leased' or cur[2] ~= worker then return 0 end
-redis.call('HSET', key, 'state', 'done', 'output', output)
-redis.call('HDEL', key, 'lease_owner', 'lease_expires_at')
-redis.call('ZREM', p .. 'leases', id)
-redis.call('XADD', p .. 'events', '*', 'type', 'subgoal.done', 'id', id, 'worker', worker)
-for _, child in ipairs(redis.call('SMEMBERS', p .. 'dependents:' .. id)) do
-  local ckey = p .. 'sg:' .. child
-  local unmet = redis.call('HINCRBY', ckey, 'unmet', -1)
-  if unmet == 0 and redis.call('HGET', ckey, 'state') == 'pending' then
-    redis.call('HSET', ckey, 'state', 'ready')
-    redis.call('LPUSH', p .. 'ready', child)
-    redis.call('XADD', p .. 'events', '*', 'type', 'subgoal.ready', 'id', child)
-  end
-end
-local done = redis.call('HINCRBY', p .. 'run', 'done', 1)
-if done == tonumber(redis.call('HGET', p .. 'run', 'total')) then
-  redis.call('HSET', p .. 'run', 'state', 'completed')
-  redis.call('XADD', p .. 'events', '*', 'type', 'run.completed')
-end
+local p, id, worker, output, tokens = ARGV[1], ARGV[2], ARGV[3], ARGV[4], tonumber(ARGV[5])
+if not holds_lease(p, id, worker) then return 0 end
+redis.call('HSET', p .. 'sg:' .. id, 'state', 'done', 'output', output)
+clear_lease(p, id)
+redis.call('HINCRBY', p .. 'run', 'done', 1)
+redis.call('HINCRBY', p .. 'run', 'tokens', tokens)
+log(p, 'type', 'subgoal.done', 'id', id, 'worker', worker, 'tokens', tokens)
+release_dependents(p, id)
+finish_if_terminal(p)
 return 1
 """
 
 _FAIL = """
 local p, id, worker, err = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
+if not holds_lease(p, id, worker) then return 0 end
+retry_or_fail(p, id, err, 'subgoal.retried', worker)
+return 1
+"""
+
+_DISPATCH = """
+local p, id = ARGV[1], ARGV[2]
+if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return 0 end
+if redis.call('HGET', p .. 'sg:' .. id, 'state') ~= 'checking' then return 0 end
+enqueue(p, id)
+return 1
+"""
+
+_REUSE = """
+local p, id, source, reason = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
 local key = p .. 'sg:' .. id
-local cur = redis.call('HMGET', key, 'state', 'lease_owner')
-if cur[1] ~= 'leased' or cur[2] ~= worker then return 0 end
-redis.call('HSET', key, 'state', 'failed', 'error', err)
-redis.call('HDEL', key, 'lease_owner', 'lease_expires_at')
-redis.call('ZREM', p .. 'leases', id)
-redis.call('XADD', p .. 'events', '*',
-  'type', 'subgoal.failed', 'id', id, 'worker', worker, 'error', err)
-redis.call('HSET', p .. 'run', 'state', 'failed')
-redis.call('XADD', p .. 'events', '*', 'type', 'run.failed', 'id', id)
+if redis.call('HGET', key, 'state') ~= 'checking' then return 0 end
+local src = redis.call('HMGET', p .. 'sg:' .. source, 'state', 'output')
+if src[1] ~= 'done' then return 0 end
+redis.call('HSET', key, 'state', 'done', 'output', src[2], 'reused_from', source)
+redis.call('HINCRBY', p .. 'run', 'done', 1)
+log(p, 'type', 'supervisor.reused', 'id', id, 'source', source, 'reason', reason)
+release_dependents(p, id)
+finish_if_terminal(p)
+return 1
+"""
+
+_RECLAIM = """
+local p = ARGV[1]
+if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return 0 end
+local expired = redis.call('ZRANGEBYSCORE', p .. 'leases', '-inf', now_ms())
+for _, id in ipairs(expired) do
+  local worker = redis.call('HGET', p .. 'sg:' .. id, 'lease_owner') or ''
+  retry_or_fail(p, id, 'lease expired', 'supervisor.requeued', worker)
+end
+return #expired
+"""
+
+_HALT = """
+local p, reason = ARGV[1], ARGV[2]
+if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return 0 end
+redis.call('HSET', p .. 'run', 'state', 'failed', 'reason', reason)
+log(p, 'type', 'supervisor.halted', 'reason', reason)
 return 1
 """
 
@@ -115,29 +225,51 @@ class Blackboard:
         self.run_id = run_id
         # The braces are a Redis hash tag: they keep a run's keys on one cluster slot.
         self._p = f"concord:{{{run_id}}}:"
-        self._lease = redis.register_script(_LEASE)
-        self._heartbeat = redis.register_script(_HEARTBEAT)
-        self._complete = redis.register_script(_COMPLETE)
-        self._fail = redis.register_script(_FAIL)
+        self._events = self._p + "events"
+        self._lease = redis.register_script(_LIB + _LEASE)
+        self._heartbeat = redis.register_script(_LIB + _HEARTBEAT)
+        self._complete = redis.register_script(_LIB + _COMPLETE)
+        self._fail = redis.register_script(_LIB + _FAIL)
+        self._dispatch = redis.register_script(_LIB + _DISPATCH)
+        self._reuse = redis.register_script(_LIB + _REUSE)
+        self._reclaim = redis.register_script(_LIB + _RECLAIM)
+        self._halt = redis.register_script(_LIB + _HALT)
+
+    # --- submitting and reading -------------------------------------------------
 
     async def submit(
         self,
         specs: Sequence[SubgoalSpec],
         *,
+        supervised: bool = False,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         max_subgoals: int = DEFAULT_MAX_SUBGOALS,
         max_depth: int = DEFAULT_MAX_DEPTH,
     ) -> None:
-        """Validate the graph, store it, and mark subgoals with no dependencies ready."""
+        """Validate the graph, store it, and release subgoals with no dependencies.
+
+        With `supervised=True` each subgoal waits for a supervisor's check before it
+        reaches the worker queue, so a supervisor must be running for the run to progress.
+        """
         validate_graph(specs, max_subgoals=max_subgoals, max_depth=max_depth)
         if await self._redis.exists(self._p + "run"):
             raise RunExistsError(f"run {self.run_id!r} already has a graph")
 
+        root_state = State.CHECKING if supervised else State.READY
         async with self._redis.pipeline(transaction=True) as pipe:
             pipe.hset(
                 self._p + "run",
-                mapping={"state": RunState.RUNNING, "total": len(specs), "done": 0},
+                mapping={
+                    "state": RunState.RUNNING,
+                    "total": len(specs),
+                    "done": 0,
+                    "failed": 0,
+                    "tokens": 0,
+                    "max_attempts": max_attempts,
+                    "supervised": int(supervised),
+                },
             )
-            pipe.xadd(self._p + "events", {"type": "run.submitted", "total": len(specs)})
+            pipe.xadd(self._events, {"type": "run.submitted", "total": len(specs)})
             for spec in specs:
                 is_root = not spec.depends_on
                 pipe.hset(
@@ -145,7 +277,7 @@ class Blackboard:
                     mapping={
                         "description": spec.description,
                         "depends_on": json.dumps(spec.depends_on),
-                        "state": State.READY if is_root else State.PENDING,
+                        "state": root_state if is_root else State.PENDING,
                         "unmet": len(spec.depends_on),
                         "attempts": 0,
                     },
@@ -153,31 +285,10 @@ class Blackboard:
                 for dep in spec.depends_on:
                     pipe.sadd(self._p + "dependents:" + dep, spec.id)
                 if is_root:
-                    pipe.lpush(self._p + "ready", spec.id)
-                    pipe.xadd(self._p + "events", {"type": "subgoal.ready", "id": spec.id})
+                    if not supervised:
+                        pipe.lpush(self._p + "ready", spec.id)
+                    pipe.xadd(self._events, {"type": f"subgoal.{root_state}", "id": spec.id})
             await pipe.execute()
-
-    async def lease(self, worker: str, ttl: float) -> Subgoal | None:
-        """Take one ready subgoal for `ttl` seconds, or return None if nothing is ready."""
-        subgoal_id = await self._lease(args=[self._p, worker, int(ttl * 1000)])
-        if subgoal_id is None:
-            return None
-        return await self.get(subgoal_id)
-
-    async def heartbeat(self, subgoal_id: str, worker: str, ttl: float) -> bool:
-        """Extend a lease. False means this worker no longer holds it."""
-        return bool(await self._heartbeat(args=[self._p, subgoal_id, worker, int(ttl * 1000)]))
-
-    async def complete(self, subgoal_id: str, worker: str, output: str) -> bool:
-        """Record the output and release any dependents that are now unblocked.
-
-        False means this worker no longer holds the lease, and nothing was written.
-        """
-        return bool(await self._complete(args=[self._p, subgoal_id, worker, output]))
-
-    async def fail(self, subgoal_id: str, worker: str, error: str) -> bool:
-        """Mark the subgoal and the run failed. False means the lease was lost."""
-        return bool(await self._fail(args=[self._p, subgoal_id, worker, error]))
 
     async def get(self, subgoal_id: str) -> Subgoal:
         record = await self._redis.hgetall(self._p + "sg:" + subgoal_id)
@@ -194,6 +305,7 @@ class Blackboard:
             lease_expires_at=int(expires) if expires is not None else None,
             output=record.get("output"),
             error=record.get("error"),
+            reused_from=record.get("reused_from"),
         )
 
     async def outputs(self, subgoal_ids: Sequence[str]) -> dict[str, str]:
@@ -209,10 +321,138 @@ class Blackboard:
         if not record:
             raise KeyError(self.run_id)
         return RunStatus(
-            state=RunState(record["state"]), total=int(record["total"]), done=int(record["done"])
+            state=RunState(record["state"]),
+            total=int(record["total"]),
+            done=int(record["done"]),
+            failed=int(record["failed"]),
+            tokens=int(record["tokens"]),
+            reason=record.get("reason"),
         )
 
     async def events(self) -> list[dict[str, str]]:
         """Every event of the run in order. Each carries its stream id under `seq`."""
-        entries = await self._redis.xrange(self._p + "events")
+        entries = await self._redis.xrange(self._events)
         return [{"seq": seq, **fields} for seq, fields in entries]
+
+    async def interventions(self) -> list[dict[str, str]]:
+        """Only the events that record a supervisor action."""
+        return [e for e in await self.events() if e["type"].startswith("supervisor.")]
+
+    # --- worker operations ------------------------------------------------------
+
+    async def lease(self, worker: str, ttl: float) -> Subgoal | None:
+        """Take one ready subgoal for `ttl` seconds, or return None if nothing is ready."""
+        subgoal_id = await self._lease(args=[self._p, worker, int(ttl * 1000)])
+        if subgoal_id is None:
+            return None
+        return await self.get(subgoal_id)
+
+    async def heartbeat(self, subgoal_id: str, worker: str, ttl: float) -> bool:
+        """Extend a lease. False means this worker no longer holds it."""
+        return bool(await self._heartbeat(args=[self._p, subgoal_id, worker, int(ttl * 1000)]))
+
+    async def complete(self, subgoal_id: str, worker: str, output: str, tokens: int = 0) -> bool:
+        """Record the output and release any dependents that are now unblocked.
+
+        False means this worker no longer holds the lease, and nothing was written.
+        """
+        return bool(await self._complete(args=[self._p, subgoal_id, worker, output, tokens]))
+
+    async def fail(self, subgoal_id: str, worker: str, error: str) -> bool:
+        """Report a failed attempt. The subgoal is retried until it runs out of attempts,
+        then it and everything depending on it fail. False means the lease was lost.
+        """
+        return bool(await self._fail(args=[self._p, subgoal_id, worker, error]))
+
+    # --- supervisor operations --------------------------------------------------
+
+    async def dispatch(self, subgoal_id: str) -> bool:
+        """Send a checked subgoal to the worker queue. False if it was not waiting."""
+        return bool(await self._dispatch(args=[self._p, subgoal_id]))
+
+    async def reuse(self, subgoal_id: str, source_id: str, reason: str) -> bool:
+        """Finish a waiting subgoal with the output of a finished one, without a worker."""
+        return bool(await self._reuse(args=[self._p, subgoal_id, source_id, reason]))
+
+    async def reclaim_expired(self) -> int:
+        """Requeue (or fail, if out of attempts) every subgoal whose lease has expired."""
+        return int(await self._reclaim(args=[self._p]))
+
+    async def halt(self, reason: str) -> bool:
+        """Stop the run. False if it had already ended."""
+        return bool(await self._halt(args=[self._p, reason]))
+
+    async def hold(self, subgoal_id: str, source_id: str, reason: str) -> None:
+        """Keep a duplicate waiting until the subgoal it matches finishes."""
+        async with self._redis.pipeline(transaction=True) as pipe:
+            pipe.hset(self._p + "waiters:" + source_id, subgoal_id, reason)
+            pipe.xadd(
+                self._events,
+                {
+                    "type": "supervisor.held",
+                    "id": subgoal_id,
+                    "source": source_id,
+                    "reason": reason,
+                },
+            )
+            await pipe.execute()
+
+    async def waiters(self, source_id: str) -> dict[str, str]:
+        """Duplicates held for `source_id`, mapped to the reason they matched."""
+        return await self._redis.hgetall(self._p + "waiters:" + source_id)
+
+    async def clear_waiters(self, source_id: str) -> None:
+        await self._redis.delete(self._p + "waiters:" + source_id)
+
+    async def dedupe_owner(self, key: str) -> str | None:
+        return await self._redis.hget(self._p + "dedupe:keys", key)
+
+    async def dedupe_vectors(self) -> dict[str, dict]:
+        raw = await self._redis.hgetall(self._p + "dedupe:vectors")
+        return {subgoal_id: json.loads(value) for subgoal_id, value in raw.items()}
+
+    async def dedupe_register(
+        self, subgoal_id: str, key: str, deps: str, vector: list[float] | None
+    ) -> None:
+        """Make this subgoal the one later duplicates are matched against."""
+        async with self._redis.pipeline(transaction=True) as pipe:
+            pipe.hsetnx(self._p + "dedupe:keys", key, subgoal_id)
+            if vector is not None:
+                entry = json.dumps({"deps": deps, "vector": vector})
+                pipe.hset(self._p + "dedupe:vectors", subgoal_id, entry)
+            await pipe.execute()
+
+    async def ensure_group(self, group: str) -> None:
+        """Create a consumer group that starts from the first event of the run."""
+        try:
+            await self._redis.xgroup_create(self._events, group, id="0", mkstream=True)
+        except ResponseError as exc:
+            if "BUSYGROUP" not in str(exc):
+                raise
+
+    async def read_events(
+        self,
+        group: str,
+        consumer: str,
+        *,
+        pending: bool = False,
+        block: float | None = None,
+        count: int = 100,
+    ) -> list[dict[str, str]]:
+        """Read events for a consumer group.
+
+        `pending=True` returns events this consumer was given earlier but never
+        acknowledged, which is how a restarted consumer picks up where it stopped.
+        """
+        response = await self._redis.xreadgroup(
+            group,
+            consumer,
+            {self._events: "0" if pending else ">"},
+            count=count,
+            block=int(block * 1000) if block else None,
+        )
+        entries = response[0][1] if response else []
+        return [{"seq": seq, **fields} for seq, fields in entries]
+
+    async def ack(self, group: str, seq: str) -> None:
+        await self._redis.xack(self._events, group, seq)
