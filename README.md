@@ -4,8 +4,9 @@ A reliability layer for multi-agent runs. A planner splits a task into subgoals,
 them from a shared blackboard, and a supervisor catches stalls, repeated work and off-task
 output.
 
-**Status: early development.** The blackboard, scheduler, worker pool and supervisor work
-against a mock model. Tracing, real model calls and the measured scorecard are not built yet.
+**Status: early development.** The blackboard, scheduler, worker pool, supervisor and
+fault-injection harness work against a mock model. Tracing, real model calls and the drift
+check are not built yet.
 See [ROADMAP.md](ROADMAP.md) for the build plan.
 
 ## What works today
@@ -55,6 +56,45 @@ status, _ = await asyncio.gather(pool.run(), Supervisor(board, token_budget=50_0
 print(await board.interventions())
 ```
 
+## Scorecard
+
+Measured by the fault-injection harness: 72 scripted runs, each with one injected fault,
+played with and without the supervisor. Everything runs on a mock model, so the token
+figures are word counts and only the relative difference means anything.
+
+| Measure | Target | Result |
+|---------|--------|--------|
+| Exact duplicate subgoals caught | 100% | 8/8 (100%) |
+| Reworded duplicate subgoals caught | ≥ 90% | 0/16 (0%) |
+| False alarms on healthy runs | ≤ 5% | 0/16 (0%) |
+| Time to detect a dead worker | ≤ 0.80s (2 × lease) | about 0.4s at worst |
+| Off-task output caught | precision and recall ≥ 0.8 | 0/8, no drift check yet |
+| Tokens saved on runs with an exact duplicate | report the figure | 11.2% |
+| Finished subgoals re-run after a crash | 0 | not measured, recovery not built |
+
+What the supervisor changes, by fault type:
+
+| Fault | Correct result without supervisor | With supervisor |
+|-------|-----------------------------------|-----------------|
+| Dead worker | 0/8, the run hangs | 8/8 |
+| Exact duplicate | 8/8, but the work is done twice | 8/8, duplicate never reaches a worker |
+| Hung worker | 8/8 | 8/8 (caught by the worker's own deadline, not the supervisor) |
+| Supervisor restart mid-run | not applicable | 8/8 |
+| Off-task output | 0/8 | 0/8 |
+
+Two gaps are visible and left in on purpose:
+
+- **Reworded duplicates are not caught by default.** Similarity matching is off unless an
+  embedder is supplied. With the built-in word-overlap embedder switched on, light edits
+  are caught (7/8 here, 38/40 in a larger run) and true paraphrases are not (0/40). In
+  that larger run it also reused the wrong output once in 40 look-alike runs, where two
+  subgoals differed only in their topic. Word overlap cannot tell which word changed, so
+  it stays off until a real embedding model is plugged in.
+- **Off-task output is not caught at all.** The drift check is a later phase.
+
+Reproduce it with `uv run python -m concord.harness`. CI runs the same command with
+`--check`, which fails the build if a gate for an already-built detector regresses.
+
 ## Quick start
 
 Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and Docker.
@@ -64,6 +104,7 @@ uv sync                 # install dependencies
 docker compose up -d    # start Redis and Postgres
 uv run pytest           # run the tests
 uv run ruff check .     # lint
+uv run python -m concord.harness   # print the scorecard
 ```
 
 ## Layout

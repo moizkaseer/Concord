@@ -34,14 +34,15 @@ Build in this order. Each phase ends with a test that must pass before the next 
 
 ## Scorecard
 
-Nothing has been measured yet. Targets are proposals.
+Measured by `uv run python -m concord.harness` on a mock model (72 scenarios). Targets are
+proposals.
 
 | Measure | Target | Result |
 |---------|--------|--------|
-| Exact duplicate subgoals caught | 100% | not measured |
-| Reworded duplicate subgoals caught | ≥ 90% | not measured |
-| False alarms on healthy runs | ≤ 5% | not measured |
-| Time to detect a dead worker | ≤ 2 × lease length | not measured |
-| Drift check precision and recall | ≥ 0.8 each | not measured |
-| Tokens saved against a run with no supervisor | report the figure | not measured |
+| Exact duplicate subgoals caught | 100% | 8/8 (100%) |
+| Reworded duplicate subgoals caught | ≥ 90% | 0/16 (0%), similarity matching is off by default |
+| False alarms on healthy runs | ≤ 5% | 0/16 (0%) |
+| Time to detect a dead worker | ≤ 2 × lease length | about 0.4s at worst against a 0.80s limit |
+| Drift check precision and recall | ≥ 0.8 each | not built; 0/8 off-task outputs caught |
+| Tokens saved against a run with no supervisor | report the figure | 11.2% on runs with one exact duplicate |
 | Finished subgoals re-run after a crash | 0 | not measured |
