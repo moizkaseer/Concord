@@ -1,0 +1,902 @@
+[
+  {
+    "id": "c001",
+    "kind": "own",
+    "label": "on_task",
+    "question": "jaeger-clock-skew",
+    "subgoal": "skew-disable",
+    "output_question": "jaeger-clock-skew",
+    "output_subgoal": "skew-disable"
+  },
+  {
+    "id": "c002",
+    "kind": "own",
+    "label": "on_task",
+    "question": "llm-judge-reliability",
+    "subgoal": "judge-biases",
+    "output_question": "llm-judge-reliability",
+    "output_subgoal": "judge-biases"
+  },
+  {
+    "id": "c003",
+    "kind": "own",
+    "label": "on_task",
+    "question": "blackboard-architecture",
+    "subgoal": "blackboard-origin",
+    "output_question": "blackboard-architecture",
+    "output_subgoal": "blackboard-origin"
+  },
+  {
+    "id": "c004",
+    "kind": "own",
+    "label": "on_task",
+    "question": "dead-worker-recovery",
+    "subgoal": "celery-failure",
+    "output_question": "dead-worker-recovery",
+    "output_subgoal": "celery-failure"
+  },
+  {
+    "id": "c005",
+    "kind": "own",
+    "label": "on_task",
+    "question": "otel-genai-conventions",
+    "subgoal": "stability-status",
+    "output_question": "otel-genai-conventions",
+    "output_subgoal": "stability-status"
+  },
+  {
+    "id": "c006",
+    "kind": "own",
+    "label": "on_task",
+    "question": "otel-genai-conventions",
+    "subgoal": "agent-spans",
+    "output_question": "otel-genai-conventions",
+    "output_subgoal": "agent-spans"
+  },
+  {
+    "id": "c007",
+    "kind": "own",
+    "label": "on_task",
+    "question": "jaeger-clock-skew",
+    "subgoal": "skew-trigger",
+    "output_question": "jaeger-clock-skew",
+    "output_subgoal": "skew-trigger"
+  },
+  {
+    "id": "c008",
+    "kind": "own",
+    "label": "on_task",
+    "question": "durable-execution",
+    "subgoal": "restate",
+    "output_question": "durable-execution",
+    "output_subgoal": "restate"
+  },
+  {
+    "id": "c009",
+    "kind": "own",
+    "label": "on_task",
+    "question": "multi-agent-positions",
+    "subgoal": "synthesis",
+    "output_question": "multi-agent-positions",
+    "output_subgoal": "synthesis"
+  },
+  {
+    "id": "c010",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-vs-temporal-heartbeats",
+    "subgoal": "concord-recovery",
+    "output_question": "concord-vs-temporal-heartbeats",
+    "output_subgoal": "concord-recovery"
+  },
+  {
+    "id": "c011",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-supervisor-vs-langgraph",
+    "subgoal": "compare-answer",
+    "output_question": "concord-supervisor-vs-langgraph",
+    "output_subgoal": "compare-answer"
+  },
+  {
+    "id": "c012",
+    "kind": "own",
+    "label": "on_task",
+    "question": "durable-execution",
+    "subgoal": "dbos",
+    "output_question": "durable-execution",
+    "output_subgoal": "dbos"
+  },
+  {
+    "id": "c013",
+    "kind": "own",
+    "label": "on_task",
+    "question": "mast-taxonomy",
+    "subgoal": "mast-categories",
+    "output_question": "mast-taxonomy",
+    "output_subgoal": "mast-categories"
+  },
+  {
+    "id": "c014",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-dedupe-vs-semantic-cache",
+    "subgoal": "concord-dedup",
+    "output_question": "concord-dedupe-vs-semantic-cache",
+    "output_subgoal": "concord-dedup"
+  },
+  {
+    "id": "c015",
+    "kind": "own",
+    "label": "on_task",
+    "question": "dead-worker-recovery",
+    "subgoal": "answer",
+    "output_question": "dead-worker-recovery",
+    "output_subgoal": "answer"
+  },
+  {
+    "id": "c016",
+    "kind": "own",
+    "label": "on_task",
+    "question": "bm25-vs-dense-retrieval",
+    "subgoal": "bm25-behavior",
+    "output_question": "bm25-vs-dense-retrieval",
+    "output_subgoal": "bm25-behavior"
+  },
+  {
+    "id": "c017",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-scorecard-vs-studies",
+    "subgoal": "final-answer",
+    "output_question": "concord-scorecard-vs-studies",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c018",
+    "kind": "own",
+    "label": "on_task",
+    "question": "llm-judge-reliability",
+    "subgoal": "judge-reliability",
+    "output_question": "llm-judge-reliability",
+    "output_subgoal": "judge-reliability"
+  },
+  {
+    "id": "c019",
+    "kind": "own",
+    "label": "on_task",
+    "question": "jaeger-clock-skew",
+    "subgoal": "final-answer",
+    "output_question": "jaeger-clock-skew",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c020",
+    "kind": "own",
+    "label": "on_task",
+    "question": "blackboard-architecture",
+    "subgoal": "final-answer",
+    "output_question": "blackboard-architecture",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c021",
+    "kind": "own",
+    "label": "on_task",
+    "question": "durable-execution",
+    "subgoal": "temporal",
+    "output_question": "durable-execution",
+    "output_subgoal": "temporal"
+  },
+  {
+    "id": "c022",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-known-limits",
+    "subgoal": "final-answer",
+    "output_question": "concord-known-limits",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c023",
+    "kind": "own",
+    "label": "on_task",
+    "question": "dead-worker-recovery",
+    "subgoal": "stepfunctions-failure",
+    "output_question": "dead-worker-recovery",
+    "output_subgoal": "stepfunctions-failure"
+  },
+  {
+    "id": "c024",
+    "kind": "own",
+    "label": "on_task",
+    "question": "framework-failure-handling",
+    "subgoal": "final-answer",
+    "output_question": "framework-failure-handling",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c025",
+    "kind": "own",
+    "label": "on_task",
+    "question": "otel-genai-conventions",
+    "subgoal": "final-answer",
+    "output_question": "otel-genai-conventions",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c026",
+    "kind": "own",
+    "label": "on_task",
+    "question": "bm25-vs-dense-retrieval",
+    "subgoal": "dense-behavior",
+    "output_question": "bm25-vs-dense-retrieval",
+    "output_subgoal": "dense-behavior"
+  },
+  {
+    "id": "c027",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-scorecard-vs-studies",
+    "subgoal": "published-failure-modes",
+    "output_question": "concord-scorecard-vs-studies",
+    "output_subgoal": "published-failure-modes"
+  },
+  {
+    "id": "c028",
+    "kind": "own",
+    "label": "on_task",
+    "question": "otel-genai-conventions",
+    "subgoal": "model-spans",
+    "output_question": "otel-genai-conventions",
+    "output_subgoal": "model-spans"
+  },
+  {
+    "id": "c029",
+    "kind": "own",
+    "label": "on_task",
+    "question": "blackboard-architecture",
+    "subgoal": "blackboard-concept",
+    "output_question": "blackboard-architecture",
+    "output_subgoal": "blackboard-concept"
+  },
+  {
+    "id": "c030",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-scorecard-vs-studies",
+    "subgoal": "supervisor-design",
+    "output_question": "concord-scorecard-vs-studies",
+    "output_subgoal": "supervisor-design"
+  },
+  {
+    "id": "c031",
+    "kind": "own",
+    "label": "on_task",
+    "question": "otel-genai-conventions",
+    "subgoal": "tool-spans",
+    "output_question": "otel-genai-conventions",
+    "output_subgoal": "tool-spans"
+  },
+  {
+    "id": "c032",
+    "kind": "own",
+    "label": "on_task",
+    "question": "dead-worker-recovery",
+    "subgoal": "temporal-failure",
+    "output_question": "dead-worker-recovery",
+    "output_subgoal": "temporal-failure"
+  },
+  {
+    "id": "c033",
+    "kind": "own",
+    "label": "on_task",
+    "question": "fencing-tokens",
+    "subgoal": "zk-fencing",
+    "output_question": "fencing-tokens",
+    "output_subgoal": "zk-fencing"
+  },
+  {
+    "id": "c034",
+    "kind": "own",
+    "label": "on_task",
+    "question": "multi-agent-positions",
+    "subgoal": "cognition-post",
+    "output_question": "multi-agent-positions",
+    "output_subgoal": "cognition-post"
+  },
+  {
+    "id": "c035",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-tracing-vs-observability-tools",
+    "subgoal": "langfuse-model",
+    "output_question": "concord-tracing-vs-observability-tools",
+    "output_subgoal": "langfuse-model"
+  },
+  {
+    "id": "c036",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-scorecard-vs-studies",
+    "subgoal": "scorecard-failures",
+    "output_question": "concord-scorecard-vs-studies",
+    "output_subgoal": "scorecard-failures"
+  },
+  {
+    "id": "c037",
+    "kind": "own",
+    "label": "on_task",
+    "question": "mast-taxonomy",
+    "subgoal": "mast-frequencies",
+    "output_question": "mast-taxonomy",
+    "output_subgoal": "mast-frequencies"
+  },
+  {
+    "id": "c038",
+    "kind": "own",
+    "label": "on_task",
+    "question": "fencing-tokens",
+    "subgoal": "etcd-fencing",
+    "output_question": "fencing-tokens",
+    "output_subgoal": "etcd-fencing"
+  },
+  {
+    "id": "c039",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-tracing-vs-observability-tools",
+    "subgoal": "phoenix-model",
+    "output_question": "concord-tracing-vs-observability-tools",
+    "output_subgoal": "phoenix-model"
+  },
+  {
+    "id": "c040",
+    "kind": "own",
+    "label": "on_task",
+    "question": "restart-delivery-guarantees",
+    "subgoal": "redis-streams",
+    "output_question": "restart-delivery-guarantees",
+    "output_subgoal": "redis-streams"
+  },
+  {
+    "id": "c041",
+    "kind": "own",
+    "label": "on_task",
+    "question": "agent-run-budgets",
+    "subgoal": "final-answer",
+    "output_question": "agent-run-budgets",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c042",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-tracing-vs-observability-tools",
+    "subgoal": "concord-tracing",
+    "output_question": "concord-tracing-vs-observability-tools",
+    "output_subgoal": "concord-tracing"
+  },
+  {
+    "id": "c043",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-known-limits",
+    "subgoal": "tracing-limits",
+    "output_question": "concord-known-limits",
+    "output_subgoal": "tracing-limits"
+  },
+  {
+    "id": "c044",
+    "kind": "own",
+    "label": "on_task",
+    "question": "agent-run-budgets",
+    "subgoal": "claude-limits",
+    "output_question": "agent-run-budgets",
+    "output_subgoal": "claude-limits"
+  },
+  {
+    "id": "c045",
+    "kind": "own",
+    "label": "on_task",
+    "question": "agent-run-budgets",
+    "subgoal": "langgraph-limits",
+    "output_question": "agent-run-budgets",
+    "output_subgoal": "langgraph-limits"
+  },
+  {
+    "id": "c046",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-supervisor-vs-langgraph",
+    "subgoal": "concord-supervisor",
+    "output_question": "concord-supervisor-vs-langgraph",
+    "output_subgoal": "concord-supervisor"
+  },
+  {
+    "id": "c047",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-dedupe-vs-semantic-cache",
+    "subgoal": "answer",
+    "output_question": "concord-dedupe-vs-semantic-cache",
+    "output_subgoal": "answer"
+  },
+  {
+    "id": "c048",
+    "kind": "own",
+    "label": "on_task",
+    "question": "multi-agent-positions",
+    "subgoal": "anthropic-post",
+    "output_question": "multi-agent-positions",
+    "output_subgoal": "anthropic-post"
+  },
+  {
+    "id": "c049",
+    "kind": "own",
+    "label": "on_task",
+    "question": "fencing-tokens",
+    "subgoal": "fencing-concept",
+    "output_question": "fencing-tokens",
+    "output_subgoal": "fencing-concept"
+  },
+  {
+    "id": "c050",
+    "kind": "own",
+    "label": "on_task",
+    "question": "jaeger-clock-skew",
+    "subgoal": "skew-mechanism",
+    "output_question": "jaeger-clock-skew",
+    "output_subgoal": "skew-mechanism"
+  },
+  {
+    "id": "c051",
+    "kind": "own",
+    "label": "on_task",
+    "question": "durable-execution",
+    "subgoal": "answer",
+    "output_question": "durable-execution",
+    "output_subgoal": "answer"
+  },
+  {
+    "id": "c052",
+    "kind": "own",
+    "label": "on_task",
+    "question": "framework-failure-handling",
+    "subgoal": "crewai-failure",
+    "output_question": "framework-failure-handling",
+    "output_subgoal": "crewai-failure"
+  },
+  {
+    "id": "c053",
+    "kind": "own",
+    "label": "on_task",
+    "question": "concord-known-limits",
+    "subgoal": "dedup-limits",
+    "output_question": "concord-known-limits",
+    "output_subgoal": "dedup-limits"
+  },
+  {
+    "id": "c054",
+    "kind": "own",
+    "label": "on_task",
+    "question": "bm25-vs-dense-retrieval",
+    "subgoal": "final-answer",
+    "output_question": "bm25-vs-dense-retrieval",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c055",
+    "kind": "own",
+    "label": "on_task",
+    "question": "blackboard-architecture",
+    "subgoal": "llm-blackboard-papers",
+    "output_question": "blackboard-architecture",
+    "output_subgoal": "llm-blackboard-papers"
+  },
+  {
+    "id": "c056",
+    "kind": "own",
+    "label": "on_task",
+    "question": "mast-taxonomy",
+    "subgoal": "final-answer",
+    "output_question": "mast-taxonomy",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c057",
+    "kind": "own",
+    "label": "on_task",
+    "question": "bm25-vs-dense-retrieval",
+    "subgoal": "hybrid-evidence",
+    "output_question": "bm25-vs-dense-retrieval",
+    "output_subgoal": "hybrid-evidence"
+  },
+  {
+    "id": "c058",
+    "kind": "own",
+    "label": "on_task",
+    "question": "llm-judge-reliability",
+    "subgoal": "final-answer",
+    "output_question": "llm-judge-reliability",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c059",
+    "kind": "own",
+    "label": "on_task",
+    "question": "restart-delivery-guarantees",
+    "subgoal": "answer",
+    "output_question": "restart-delivery-guarantees",
+    "output_subgoal": "answer"
+  },
+  {
+    "id": "c060",
+    "kind": "own",
+    "label": "on_task",
+    "question": "agent-run-budgets",
+    "subgoal": "openai-limits",
+    "output_question": "agent-run-budgets",
+    "output_subgoal": "openai-limits"
+  },
+  {
+    "id": "c061",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "multi-agent-positions",
+    "subgoal": "cognition-post",
+    "output_question": "multi-agent-positions",
+    "output_subgoal": "anthropic-post"
+  },
+  {
+    "id": "c062",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "concord-tracing-vs-observability-tools",
+    "subgoal": "phoenix-model",
+    "output_question": "concord-tracing-vs-observability-tools",
+    "output_subgoal": "langfuse-model"
+  },
+  {
+    "id": "c063",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "dead-worker-recovery",
+    "subgoal": "celery-failure",
+    "output_question": "dead-worker-recovery",
+    "output_subgoal": "temporal-failure"
+  },
+  {
+    "id": "c064",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "concord-known-limits",
+    "subgoal": "dedup-limits",
+    "output_question": "concord-known-limits",
+    "output_subgoal": "tracing-limits"
+  },
+  {
+    "id": "c065",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "mast-taxonomy",
+    "subgoal": "mast-frequencies",
+    "output_question": "mast-taxonomy",
+    "output_subgoal": "mast-categories"
+  },
+  {
+    "id": "c066",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "jaeger-clock-skew",
+    "subgoal": "skew-mechanism",
+    "output_question": "jaeger-clock-skew",
+    "output_subgoal": "skew-trigger"
+  },
+  {
+    "id": "c067",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "blackboard-architecture",
+    "subgoal": "llm-blackboard-papers",
+    "output_question": "blackboard-architecture",
+    "output_subgoal": "blackboard-concept"
+  },
+  {
+    "id": "c068",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "otel-genai-conventions",
+    "subgoal": "agent-spans",
+    "output_question": "otel-genai-conventions",
+    "output_subgoal": "stability-status"
+  },
+  {
+    "id": "c069",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "durable-execution",
+    "subgoal": "temporal",
+    "output_question": "durable-execution",
+    "output_subgoal": "dbos"
+  },
+  {
+    "id": "c070",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "llm-judge-reliability",
+    "subgoal": "judge-reliability",
+    "output_question": "llm-judge-reliability",
+    "output_subgoal": "judge-biases"
+  },
+  {
+    "id": "c071",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "llm-judge-reliability",
+    "subgoal": "judge-mitigations",
+    "output_question": "llm-judge-reliability",
+    "output_subgoal": "judge-biases"
+  },
+  {
+    "id": "c072",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "bm25-vs-dense-retrieval",
+    "subgoal": "bm25-behavior",
+    "output_question": "bm25-vs-dense-retrieval",
+    "output_subgoal": "dense-behavior"
+  },
+  {
+    "id": "c073",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "durable-execution",
+    "subgoal": "restate",
+    "output_question": "durable-execution",
+    "output_subgoal": "temporal"
+  },
+  {
+    "id": "c074",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "dead-worker-recovery",
+    "subgoal": "temporal-failure",
+    "output_question": "dead-worker-recovery",
+    "output_subgoal": "stepfunctions-failure"
+  },
+  {
+    "id": "c075",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "otel-genai-conventions",
+    "subgoal": "tool-spans",
+    "output_question": "otel-genai-conventions",
+    "output_subgoal": "agent-spans"
+  },
+  {
+    "id": "c076",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "fencing-tokens",
+    "subgoal": "fencing-concept",
+    "output_question": "fencing-tokens",
+    "output_subgoal": "etcd-fencing"
+  },
+  {
+    "id": "c077",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "blackboard-architecture",
+    "subgoal": "blackboard-concept",
+    "output_question": "blackboard-architecture",
+    "output_subgoal": "blackboard-origin"
+  },
+  {
+    "id": "c078",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "llm-judge-reliability",
+    "subgoal": "judge-biases",
+    "output_question": "llm-judge-reliability",
+    "output_subgoal": "judge-mitigations"
+  },
+  {
+    "id": "c079",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "concord-known-limits",
+    "subgoal": "tracing-limits",
+    "output_question": "concord-known-limits",
+    "output_subgoal": "dedup-limits"
+  },
+  {
+    "id": "c080",
+    "kind": "sibling",
+    "label": "drifted",
+    "question": "framework-failure-handling",
+    "subgoal": "openai-agents-failure",
+    "output_question": "framework-failure-handling",
+    "output_subgoal": "crewai-failure"
+  },
+  {
+    "id": "c081",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "restart-delivery-guarantees",
+    "subgoal": "redis-pubsub",
+    "output_question": "bm25-vs-dense-retrieval",
+    "output_subgoal": "dense-behavior"
+  },
+  {
+    "id": "c082",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "jaeger-clock-skew",
+    "subgoal": "skew-mechanism",
+    "output_question": "mast-taxonomy",
+    "output_subgoal": "mast-frequencies"
+  },
+  {
+    "id": "c083",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "restart-delivery-guarantees",
+    "subgoal": "answer",
+    "output_question": "durable-execution",
+    "output_subgoal": "answer"
+  },
+  {
+    "id": "c084",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "dead-worker-recovery",
+    "subgoal": "temporal-failure",
+    "output_question": "concord-tracing-vs-observability-tools",
+    "output_subgoal": "langfuse-model"
+  },
+  {
+    "id": "c085",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "otel-genai-conventions",
+    "subgoal": "tool-spans",
+    "output_question": "dead-worker-recovery",
+    "output_subgoal": "celery-failure"
+  },
+  {
+    "id": "c086",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "concord-vs-temporal-heartbeats",
+    "subgoal": "concord-recovery",
+    "output_question": "concord-dedupe-vs-semantic-cache",
+    "output_subgoal": "concord-dedup"
+  },
+  {
+    "id": "c087",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "concord-tracing-vs-observability-tools",
+    "subgoal": "langfuse-model",
+    "output_question": "durable-execution",
+    "output_subgoal": "restate"
+  },
+  {
+    "id": "c088",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "llm-judge-reliability",
+    "subgoal": "judge-biases",
+    "output_question": "bm25-vs-dense-retrieval",
+    "output_subgoal": "dense-behavior"
+  },
+  {
+    "id": "c089",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "durable-execution",
+    "subgoal": "dbos",
+    "output_question": "concord-vs-temporal-heartbeats",
+    "output_subgoal": "temporal-heartbeat"
+  },
+  {
+    "id": "c090",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "concord-known-limits",
+    "subgoal": "tracing-limits",
+    "output_question": "concord-scorecard-vs-studies",
+    "output_subgoal": "supervisor-design"
+  },
+  {
+    "id": "c091",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "concord-tracing-vs-observability-tools",
+    "subgoal": "phoenix-model",
+    "output_question": "concord-scorecard-vs-studies",
+    "output_subgoal": "published-failure-modes"
+  },
+  {
+    "id": "c092",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "concord-vs-temporal-heartbeats",
+    "subgoal": "temporal-heartbeat",
+    "output_question": "fencing-tokens",
+    "output_subgoal": "fencing-concept"
+  },
+  {
+    "id": "c093",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "fencing-tokens",
+    "subgoal": "final-answer",
+    "output_question": "llm-judge-reliability",
+    "output_subgoal": "final-answer"
+  },
+  {
+    "id": "c094",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "fencing-tokens",
+    "subgoal": "fencing-concept",
+    "output_question": "blackboard-architecture",
+    "output_subgoal": "blackboard-concept"
+  },
+  {
+    "id": "c095",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "framework-failure-handling",
+    "subgoal": "crewai-failure",
+    "output_question": "bm25-vs-dense-retrieval",
+    "output_subgoal": "bm25-behavior"
+  },
+  {
+    "id": "c096",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "restart-delivery-guarantees",
+    "subgoal": "redis-streams",
+    "output_question": "concord-dedupe-vs-semantic-cache",
+    "output_subgoal": "gptcache-similarity"
+  },
+  {
+    "id": "c097",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "concord-supervisor-vs-langgraph",
+    "subgoal": "compare-answer",
+    "output_question": "concord-vs-temporal-heartbeats",
+    "output_subgoal": "compare-answer"
+  },
+  {
+    "id": "c098",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "blackboard-architecture",
+    "subgoal": "blackboard-origin",
+    "output_question": "agent-run-budgets",
+    "output_subgoal": "openai-limits"
+  },
+  {
+    "id": "c099",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "concord-scorecard-vs-studies",
+    "subgoal": "scorecard-failures",
+    "output_question": "concord-tracing-vs-observability-tools",
+    "output_subgoal": "concord-tracing"
+  },
+  {
+    "id": "c100",
+    "kind": "stranger",
+    "label": "drifted",
+    "question": "durable-execution",
+    "subgoal": "temporal",
+    "output_question": "restart-delivery-guarantees",
+    "output_subgoal": "redis-streams"
+  }
+]
