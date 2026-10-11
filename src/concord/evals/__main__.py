@@ -18,7 +18,10 @@ from concord.harness.report import table
 from concord.recording import RecordingClient, ReplayClient
 from concord.tracing import TracedModelClient, configure
 
-CORPUS_FILES = ["README.md", "ROADMAP.md", "docs/tracing.md"]
+# A frozen copy of the project's documents as they were when the questions were first
+# run. Reading the live files would change the prompts whenever the docs are edited,
+# which would break replaying a recording.
+CORPUS_FILES = ["evals/corpus/README.md", "evals/corpus/ROADMAP.md", "evals/corpus/tracing.md"]
 CORPUS_DESCRIPTION = (
     "the documentation of Concord, a multi-agent runtime: its design, its supervisor, "
     "its measured scorecard and its tracing"
