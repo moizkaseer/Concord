@@ -4,9 +4,9 @@ A reliability layer for multi-agent runs. A planner splits a task into subgoals,
 them from a shared blackboard, and a supervisor catches stalls, repeated work and off-task
 output.
 
-**Status: early development.** The blackboard, scheduler and worker pool work against a mock
-model. The supervisor, tracing and real model calls are not built yet. See
-[ROADMAP.md](ROADMAP.md) for the build plan.
+**Status: early development.** The blackboard, scheduler, worker pool and supervisor work
+against a mock model. Tracing, real model calls and the measured scorecard are not built yet.
+See [ROADMAP.md](ROADMAP.md) for the build plan.
 
 ## What works today
 
@@ -14,16 +14,31 @@ model. The supervisor, tracing and real model calls are not built yet. See
   subgoals, and stay within size and depth limits.
 - **Blackboard**: subgoal records live in Redis. Every state change is an atomic Lua script
   that also appends an event to a Redis Stream.
-- **Scheduling**: a subgoal becomes ready when all its dependencies are done.
+- **Scheduling**: a subgoal is released when all its dependencies are done.
 - **Workers**: an asyncio pool leases ready subgoals, keeps the lease alive with heartbeats
-  and writes the output back.
+  and writes the output back. A failed or timed-out attempt is retried up to a limit; after
+  that the subgoal fails along with everything that depends on it.
+- **Supervisor**: reads the event stream through a consumer group, so it resumes after a
+  restart. It
+  - requeues subgoals whose worker stopped sending heartbeats;
+  - checks each subgoal before dispatch and reuses the output of an earlier duplicate
+    (same normalized text and same inputs, or embedding similarity above a threshold);
+  - halts the run when it goes over its token budget;
+  - logs every intervention as a `supervisor.*` event with its reason.
+
+Similarity matching currently ships with a word-overlap embedder for tests. It catches
+reordered or lightly edited subgoals, not true paraphrases; those need a real embedding
+model, planned for the real-model phase.
 
 ```python
+import asyncio
+
 from redis.asyncio import Redis
 
 from concord.blackboard import Blackboard
 from concord.llm import MockModelClient
 from concord.models import SubgoalSpec
+from concord.supervisor import Supervisor
 from concord.worker import WorkerPool, model_handler
 
 redis = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
@@ -32,9 +47,12 @@ await board.submit(
     [
         SubgoalSpec(id="search", description="find sources"),
         SubgoalSpec(id="answer", description="write the answer", depends_on=["search"]),
-    ]
+    ],
+    supervised=True,
 )
-status = await WorkerPool(board, model_handler(MockModelClient(default="ok"))).run()
+pool = WorkerPool(board, model_handler(MockModelClient(default="ok")))
+status, _ = await asyncio.gather(pool.run(), Supervisor(board, token_budget=50_000).run())
+print(await board.interventions())
 ```
 
 ## Quick start

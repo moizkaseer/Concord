@@ -21,8 +21,12 @@ Build in this order. Each phase ends with a test that must pass before the next 
   consumer is slow or restarting.
 - **Leases and heartbeats for stall detection.** The planner's graph is acyclic by
   construction, so cycle checks only run on edges added during re-planning.
+- **The supervisor checks each subgoal before dispatch.** In a supervised run a subgoal
+  moves `pending → checking → ready → leased → done`, so a duplicate is caught before any
+  worker spends tokens on it.
 - **Duplicate detection by normalized key plus embedding similarity.** Repeated subgoals
-  usually arrive reworded.
+  usually arrive reworded. Inputs are part of the comparison: the same instruction applied
+  to different inputs is different work.
 - **Task drift is checked with a yes/no rubric** tuned on a labelled set, not a raw score.
 - **Specialists are a plain model-and-tool loop.** A graph framework is added only where a
   specialist needs branching.
