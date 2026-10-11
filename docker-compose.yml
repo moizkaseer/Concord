@@ -25,5 +25,12 @@ services:
       timeout: 3s
       retries: 5
 
+  # Trace viewer. UI on http://localhost:16686, OTLP/HTTP ingest on 4318.
+  jaeger:
+    image: jaegertracing/jaeger:2.1.0
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+
 volumes:
   pgdata:
