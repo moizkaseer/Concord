@@ -5,8 +5,8 @@ them from a shared blackboard, and a supervisor catches stalls, repeated work an
 output.
 
 **Status: early development.** The blackboard, scheduler, worker pool, supervisor and
-fault-injection harness work against a mock model. Tracing, real model calls and the drift
-check are not built yet.
+fault-injection harness and tracing work against a mock model. Real model calls and the
+drift check are not built yet.
 See [ROADMAP.md](ROADMAP.md) for the build plan.
 
 ## What works today
@@ -26,6 +26,12 @@ See [ROADMAP.md](ROADMAP.md) for the build plan.
     (same normalized text and same inputs, or embedding similarity above a threshold);
   - halts the run when it goes over its token budget;
   - logs every intervention as a `supervisor.*` event with its reason.
+
+- **Tracing**: one run is one OpenTelemetry trace, with spans for the run, each
+  pre-dispatch check, each attempt, model and tool calls, and blackboard writes, named after
+  the GenAI semantic conventions. An attempt lost to a dead worker is recorded by the
+  supervisor, so the failure, the requeue and the retry all show up. See
+  [docs/tracing.md](docs/tracing.md).
 
 Similarity matching currently ships with a word-overlap embedder for tests. It catches
 reordered or lightly edited subgoals, not true paraphrases; those need a real embedding
@@ -101,7 +107,7 @@ Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and Docker.
 
 ```sh
 uv sync                 # install dependencies
-docker compose up -d    # start Redis and Postgres
+docker compose up -d    # start Redis, Postgres and Jaeger
 uv run pytest           # run the tests
 uv run ruff check .     # lint
 uv run python -m concord.harness   # print the scorecard
@@ -111,5 +117,7 @@ uv run python -m concord.harness   # print the scorecard
 
 ```
 src/concord/   library code
+examples/      runnable examples
+docs/          tracing guide
 tests/         tests (mock model, no API key needed; blackboard tests need Redis running)
 ```
