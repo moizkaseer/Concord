@@ -28,10 +28,12 @@ from concord.worker import WorkerPool, model_handler
 
 redis = Redis.from_url("redis://localhost:6379/0", decode_responses=True)
 board = Blackboard(redis, run_id="demo")
-await board.submit([
-    SubgoalSpec(id="search", description="find sources"),
-    SubgoalSpec(id="answer", description="write the answer", depends_on=["search"]),
-])
+await board.submit(
+    [
+        SubgoalSpec(id="search", description="find sources"),
+        SubgoalSpec(id="answer", description="write the answer", depends_on=["search"]),
+    ]
+)
 status = await WorkerPool(board, model_handler(MockModelClient(default="ok"))).run()
 ```
 
