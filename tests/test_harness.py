@@ -73,13 +73,25 @@ async def test_run_survives_a_supervisor_restart(redis):
     assert outcome.false_alarms == 0
 
 
-async def test_off_task_output_goes_undetected_for_now(redis):
-    """Documents a known gap: nothing checks output content until the drift check exists."""
-    outcome = await run_scenario(redis, build(Kind.OFF_TASK, seed=0), Mode.SUPERVISED, FAST)
+async def test_off_task_output_spoils_the_run_unless_the_drift_check_is_on(redis):
+    scenario = build(Kind.OFF_TASK, seed=0)
 
-    assert outcome.fault_injected and outcome.completed
-    assert outcome.detected is False
-    assert not outcome.correct
+    without = await run_scenario(redis, scenario, Mode.SUPERVISED, FAST)
+    with_check = await run_scenario(redis, scenario, Mode.REVIEW, FAST)
+
+    assert without.fault_injected and without.completed
+    assert without.detected is False and not without.correct
+    assert with_check.fault_injected and with_check.detected is True
+    assert with_check.correct and with_check.false_alarms == 0
+    # The off-task subgoal ran twice; nothing else did.
+    assert with_check.worker_calls == without.worker_calls + 1
+
+
+@pytest.mark.parametrize("kind", [Kind.HEALTHY, Kind.EXACT_DUPLICATE, Kind.DEAD_WORKER])
+async def test_drift_check_leaves_other_runs_alone(redis, kind):
+    outcome = await run_scenario(redis, build(kind, seed=0), Mode.REVIEW, FAST)
+
+    assert outcome.correct and outcome.false_alarms == 0
 
 
 async def test_scenario_leaves_nothing_behind_in_redis(redis):
@@ -106,13 +118,19 @@ def _outcome(kind: Kind, mode: Mode, **changes) -> Outcome:
     return dataclasses.replace(base, **changes)
 
 
+def _detected(kind: Kind, mode: Mode) -> bool | None:
+    if kind is Kind.OFF_TASK:
+        return mode is Mode.REVIEW
+    always = {Kind.EXACT_DUPLICATE, Kind.DEAD_WORKER, Kind.HUNG_WORKER}
+    return True if kind in always and mode is not Mode.BASELINE else None
+
+
 def _clean_results() -> list[Outcome]:
-    detected = {Kind.EXACT_DUPLICATE, Kind.DEAD_WORKER, Kind.HUNG_WORKER}
     return [
         _outcome(
             kind,
             mode,
-            detected=True if kind in detected and mode is not Mode.BASELINE else None,
+            detected=_detected(kind, mode),
             detect_seconds=0.4 if kind is Kind.DEAD_WORKER and mode is not Mode.BASELINE else None,
         )
         for kind in Kind
@@ -140,8 +158,24 @@ def test_gates_pass_on_clean_results_and_report_renders():
     ],
 )
 def test_a_regression_fails_its_gate(kind, change, failing_gate):
+    _assert_gate_fails(kind, Mode.SUPERVISED, change, failing_gate)
+
+
+@pytest.mark.parametrize(
+    ("kind", "change", "failing_gate"),
+    [
+        (Kind.OFF_TASK, {"detected": False}, "with the drift check on, every off-task output"),
+        (Kind.DEAD_WORKER, {"correct": False}, "with the drift check on, no run ends"),
+        (Kind.LOOKALIKE, {"false_alarms": 1}, "with the drift check on, no false alarms"),
+    ],
+)
+def test_a_drift_check_regression_fails_its_gate(kind, change, failing_gate):
+    _assert_gate_fails(kind, Mode.REVIEW, change, failing_gate)
+
+
+def _assert_gate_fails(kind: Kind, mode: Mode, change: dict, failing_gate: str) -> None:
     outcomes = [
-        dataclasses.replace(o, **change) if (o.kind, o.mode) == (kind, Mode.SUPERVISED) else o
+        dataclasses.replace(o, **change) if (o.kind, o.mode) == (kind, mode) else o
         for o in _clean_results()
     ]
 

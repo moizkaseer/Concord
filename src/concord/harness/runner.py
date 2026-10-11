@@ -11,6 +11,8 @@ from redis.asyncio import Redis
 
 from concord.blackboard import Blackboard
 from concord.dedupe import HashingEmbedder
+from concord.drift import DriftVerdict
+from concord.drift import Outcome as Verdict
 from concord.harness.scenarios import DUPLICATE_KINDS, Kind, Scenario
 from concord.models import RunState
 from concord.supervisor import Supervisor
@@ -21,6 +23,7 @@ class Mode(StrEnum):
     BASELINE = "no supervisor"
     SUPERVISED = "supervisor"
     SIMILARITY = "supervisor + similarity"
+    REVIEW = "supervisor + drift check"
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,21 @@ class _Handler:
         await self._board.log_event("fault.injected", id=subgoal_id, kind=self._scenario.kind)
 
 
+class _OracleChecker:
+    """Stands in for the model reviewer and is never wrong: an output is drifted exactly
+    when it is not the scenario's correct output. This measures what the runtime does
+    with a verdict. How often a real reviewer is right is measured separately, on
+    labelled outputs (`python -m concord.evals.drift`)."""
+
+    def __init__(self, scenario: Scenario) -> None:
+        self._scenario = scenario
+
+    async def check(self, subgoal, inputs, output) -> DriftVerdict:
+        if output == self._scenario.expected[subgoal.id]:
+            return DriftVerdict(Verdict.ON_TASK)
+        return DriftVerdict(Verdict.DRIFTED, "the output is not about the subgoal")
+
+
 async def _restart_supervisor(board, make_supervisor, first: asyncio.Task, delay: float) -> None:
     """Kill the supervisor once work is under way, then bring up a new one."""
     while (await board.status()).done < 1:
@@ -118,11 +136,12 @@ async def run_scenario(
 
     def make_supervisor() -> Supervisor:
         embedder = HashingEmbedder() if mode is Mode.SIMILARITY else None
-        return Supervisor(board, embedder=embedder, tick=timings.tick)
+        checker = _OracleChecker(scenario) if mode is Mode.REVIEW else None
+        return Supervisor(board, embedder=embedder, checker=checker, tick=timings.tick)
 
     started = time.monotonic()
     try:
-        await board.submit(scenario.specs, supervised=supervised)
+        await board.submit(scenario.specs, supervised=supervised, review=mode is Mode.REVIEW)
         supervisor = None
         if supervised:
             supervisor = asyncio.create_task(make_supervisor().run())
@@ -171,7 +190,7 @@ async def _score(
         if kind is Kind.DEAD_WORKER:
             return event["type"] == "supervisor.requeued" and event["id"] == target
         if kind is Kind.OFF_TASK:
-            # No drift check exists yet, so nothing emits this.
+            # Only a supervisor with a drift check emits this.
             return event["type"] == "supervisor.flagged" and event["id"] == target
         return False
 

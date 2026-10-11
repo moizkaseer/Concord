@@ -125,6 +125,38 @@ def similarity_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
     return table(headers, rows)
 
 
+def review_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
+    """What reviewing every output does to a run, given a reviewer that is never wrong."""
+    others = tuple(k for k in Kind if k is not Kind.OFF_TASK and k not in HEALTHY_KINDS)
+    rows = []
+    for label, kinds in (
+        (Kind.OFF_TASK, (Kind.OFF_TASK,)),
+        ("healthy (both kinds)", HEALTHY_KINDS),
+        ("every other fault", others),
+    ):
+        off, on = _merge(summaries, kinds, Mode.SUPERVISED), _merge(summaries, kinds, Mode.REVIEW)
+        flagged = "n/a"
+        if kinds == (Kind.OFF_TASK,):
+            flagged = (
+                f"{_ratio(off.detected, off.detectable)} -> {_ratio(on.detected, on.detectable)}"
+            )
+        rows.append(
+            [
+                label,
+                flagged,
+                f"{off.false_alarm_runs} -> {on.false_alarm_runs}",
+                f"{_ratio(off.correct, off.runs)} -> {_ratio(on.correct, on.runs)}",
+            ]
+        )
+    headers = [
+        "Scenario type",
+        "Off-task output sent back (off -> on)",
+        "Runs with a false alarm (off -> on)",
+        "Correct result (off -> on)",
+    ]
+    return table(headers, rows)
+
+
 def scorecard(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> str:
     """The roadmap's seven measures, for the supervisor as it ships by default."""
     sup = Mode.SUPERVISED
@@ -132,7 +164,7 @@ def scorecard(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> 
     reworded = _merge(summaries, REWORDED_KINDS, sup)
     healthy = _merge(summaries, HEALTHY_KINDS, sup)
     dead = summaries[(Kind.DEAD_WORKER, sup)]
-    off_task = summaries[(Kind.OFF_TASK, sup)]
+    off_task = summaries[(Kind.OFF_TASK, Mode.REVIEW)]
     with_dupes = _merge(summaries, (Kind.EXACT_DUPLICATE,), sup).mean_tokens
     without = summaries[(Kind.EXACT_DUPLICATE, Mode.BASELINE)].mean_tokens
     limit = 2 * timings.lease_ttl
@@ -157,7 +189,8 @@ def scorecard(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> 
         [
             "Off-task output caught",
             "precision and recall >= 0.8",
-            f"{_ratio(off_task.detected, off_task.detectable)}, no drift check yet",
+            f"{_ratio(off_task.detected, off_task.detectable)} sent back, given a reviewer "
+            "that is never wrong",
         ],
         [
             "Tokens saved on runs with an exact duplicate",
@@ -177,8 +210,8 @@ class Gate:
 
 
 def gates(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> list[Gate]:
-    """Checks that must hold for what is already built. Known gaps (reworded
-    duplicates, off-task output) are reported in the scorecard but not gated."""
+    """Checks that must hold for what is already built. Reworded duplicates are a known
+    gap, reported in the scorecard but not gated."""
     sup = Mode.SUPERVISED
     exact = summaries[(Kind.EXACT_DUPLICATE, sup)]
     healthy = _merge(summaries, HEALTHY_KINDS, sup)
@@ -186,6 +219,9 @@ def gates(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> list
     hung = summaries[(Kind.HUNG_WORKER, sup)]
     restart = summaries[(Kind.SUPERVISOR_RESTART, sup)]
     sound = _merge(summaries, tuple(k for k in Kind if k is not Kind.OFF_TASK), sup)
+    reviewed = _merge(summaries, tuple(Kind), Mode.REVIEW)
+    off_task = summaries[(Kind.OFF_TASK, Mode.REVIEW)]
+    healthy_reviewed = _merge(summaries, HEALTHY_KINDS, Mode.REVIEW)
     runtime = _merge(summaries, RUNTIME_FAULTS, sup)
     limit = 2 * timings.lease_ttl
     slowest = max(dead.detect_times, default=float("inf"))
@@ -225,6 +261,21 @@ def gates(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> list
             sound.correct == sound.runs,
             _ratio(sound.correct, sound.runs),
         ),
+        Gate(
+            "with the drift check on, every off-task output is sent back",
+            off_task.detected == off_task.detectable,
+            _ratio(off_task.detected, off_task.detectable),
+        ),
+        Gate(
+            "with the drift check on, no run ends with a wrong output",
+            reviewed.correct == reviewed.runs,
+            _ratio(reviewed.correct, reviewed.runs),
+        ),
+        Gate(
+            "with the drift check on, no false alarms on healthy runs",
+            healthy_reviewed.false_alarm_runs == 0,
+            f"{healthy_reviewed.false_alarm_runs} of {healthy_reviewed.runs} runs",
+        ),
     ]
 
 
@@ -240,6 +291,8 @@ def render(outcomes: list[Outcome], timings: Timings) -> tuple[str, list[Gate]]:
         "BY FAULT TYPE\n\n" + fault_table(summaries),
         "SIMILARITY MATCHING (off by default; word-overlap embedder, threshold 0.9)\n\n"
         + similarity_table(summaries),
+        "DRIFT CHECK (off by default; stand-in reviewer that is never wrong)\n\n"
+        + review_table(summaries),
         "GATES\n\n"
         + "\n".join(f"{'PASS' if g.passed else 'FAIL'}  {g.name}: {g.detail}" for g in checks),
     ]
