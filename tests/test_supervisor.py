@@ -441,3 +441,16 @@ async def test_restarted_supervisor_reviews_an_output_the_last_one_left_waiting(
 async def test_review_needs_a_supervised_run(board):
     with pytest.raises(ValueError, match="supervised"):
         await board.submit([spec("a")], review=True)
+
+
+async def test_each_review_is_a_span_linked_to_the_attempt_it_reviewed(board, spans):
+    await board.submit([spec("a")], supervised=True, review=True)
+
+    await run_supervised(board, Attempts(), checker=ScriptedChecker({"a": [DRIFTED]}))
+
+    finished = spans.get_finished_spans()
+    reviews = [s for s in finished if s.name == "concord.supervisor.review"]
+    attempts = {s.context.span_id for s in finished if s.name.startswith("invoke_agent")}
+    assert [s.attributes["concord.review.outcome"] for s in reviews] == ["drifted", "on_task"]
+    assert reviews[0].attributes["concord.reason"] == "it is about wind, not solar"
+    assert all(s.links[0].context.span_id in attempts for s in reviews)

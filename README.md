@@ -7,7 +7,9 @@ output.
 **Status: early development.** The blackboard, scheduler, worker pool, supervisor and
 fault-injection harness and tracing work and are measured against a mock model. The planner,
 specialists and Claude client have run on 19 real questions with Claude Sonnet 5.5; see
-[Results on real questions](#results-on-real-questions). The drift check is not built.
+[Results on real questions](#results-on-real-questions). The drift check is built and its
+runtime behaviour is measured; how often its model reviewer is right has not been measured
+yet (see [Drift check](#drift-check)).
 See [ROADMAP.md](ROADMAP.md) for the build plan.
 
 ## What works today
@@ -25,6 +27,8 @@ See [ROADMAP.md](ROADMAP.md) for the build plan.
   - requeues subgoals whose worker stopped sending heartbeats;
   - checks each subgoal before dispatch and reuses the output of an earlier duplicate
     (same normalized text and same inputs, or embedding similarity above a threshold);
+  - reviews each finished output, when the run asks for it, and sends back one that did
+    not do the work its subgoal asked for (see [Drift check](#drift-check));
   - halts the run when it goes over its token budget;
   - logs every intervention as a `supervisor.*` event with its reason.
 
@@ -73,8 +77,8 @@ print(await board.interventions())
 
 ## Scorecard
 
-Measured by the fault-injection harness: 72 scripted runs, each with one injected fault,
-played with and without the supervisor. Everything runs on a mock model, so the token
+Measured by the fault-injection harness: 72 scripted scenarios, each with one injected
+fault, played with and without the supervisor. Everything runs on a mock model, so the token
 figures are word counts and only the relative difference means anything.
 
 | Measure | Target | Result |
@@ -83,7 +87,7 @@ figures are word counts and only the relative difference means anything.
 | Reworded duplicate subgoals caught | ≥ 90% | 0/16 (0%) |
 | False alarms on healthy runs | ≤ 5% | 0/16 (0%) |
 | Time to detect a dead worker | ≤ 0.80s (2 × lease) | about 0.4s at worst |
-| Off-task output caught | precision and recall ≥ 0.8 | 0/8, no drift check yet |
+| Off-task output caught | precision and recall ≥ 0.8 | reviewer accuracy not measured yet; 8/8 sent back given a reviewer that is never wrong |
 | Tokens saved on runs with an exact duplicate | report the figure | 11.2% |
 | Finished subgoals re-run after a crash | 0 | not measured, recovery not built |
 
@@ -95,7 +99,7 @@ What the supervisor changes, by fault type:
 | Exact duplicate | 8/8, but the work is done twice | 8/8, duplicate never reaches a worker |
 | Hung worker | 8/8 | 8/8 (caught by the worker's own deadline, not the supervisor) |
 | Supervisor restart mid-run | not applicable | 8/8 |
-| Off-task output | 0/8 | 0/8 |
+| Off-task output | 0/8 | 0/8 by default; 8/8 with the drift check on and a reviewer that is never wrong |
 
 Two gaps are visible and left in on purpose:
 
@@ -105,10 +109,66 @@ Two gaps are visible and left in on purpose:
   that larger run it also reused the wrong output once in 40 look-alike runs, where two
   subgoals differed only in their topic. Word overlap cannot tell which word changed, so
   it stays off until a real embedding model is plugged in.
-- **Off-task output is not caught at all.** The drift check is a later phase.
+- **Off-task output is only caught with the drift check on**, which is off by default
+  because it costs a model call per subgoal. The 8/8 above shows what the runtime does
+  with a correct verdict. It says nothing about how often a model reviewer gives one.
 
 Reproduce it with `uv run python -m concord.harness`. CI runs the same command with
 `--check`, which fails the build if a gate for an already-built detector regresses.
+
+## Drift check
+
+A specialist can finish its subgoal with an output about something else. Nothing in the
+scheduler notices: the output is text, and the subgoals that depend on it build on it.
+
+With `review=True` a finished output is held in a `reviewing` state and its dependents stay
+blocked. The supervisor puts five yes/no questions about it to a model:
+
+| Question | Used for |
+|----------|----------|
+| Does the output do the work this subgoal describes? | the verdict |
+| Is it about the subject of the original question? | the verdict |
+| Does it keep to this subgoal rather than another part of the task? | recorded only |
+| Are its main claims tied to a source or to its inputs? | recorded only |
+| Is the subgoal specific enough to judge an output against? | choosing between "drifted" and "unclear" |
+
+The model answers the questions; the code decides. An output that fails a verdict question
+is sent back and the subgoal runs again, with the reviewer's reason added to the prompt.
+What happens next is bounded on purpose, because a reviewer can be wrong:
+
+- A subgoal's output is sent back at most once. A second failure is kept and recorded as
+  `supervisor.flagged`, so a wrong reviewer costs one retry per subgoal and no more.
+- If the subgoal itself is too vague to judge, the output is kept and the subgoal is
+  recorded as `supervisor.needs_clarification`. Retrying a vague request gets another guess.
+- If the reviewer fails, the output is kept and `supervisor.review_skipped` is recorded.
+- Reviews run side by side, so a slow one does not delay dead-worker detection.
+
+```python
+from concord.drift import ModelDriftChecker
+
+await board.submit(specs, supervised=True, review=True)
+supervisor = Supervisor(board, checker=ModelDriftChecker(client, question))
+```
+
+**What has been measured.** In the harness, with a stand-in reviewer that is never wrong,
+all 8 off-task outputs are sent back and all 8 runs end with the right result (0 of 8
+without the check), with no false alarms on the other 64 scenarios.
+
+**What has not.** How often the model reviewer is right. `evals/drift/cases.json` holds 100
+cases for that, built from the recorded runs: 60 real outputs paired with their own subgoal
+(labelled on-task), 20 paired with the output of a sibling subgoal from the same question
+and 20 with an output from a different question (both labelled drifted). The labels follow
+from how each case was built, not from a person reading every output, so the report lists
+every disagreement for a person to check. The drifted cases are swaps of real outputs,
+which is one kind of drift; a specialist that wanders off partway through is not covered.
+
+```sh
+uv run python -m concord.evals.drift run          # prints the estimated cost and stops
+uv run python -m concord.evals.drift run --yes    # about $0.50 on Claude Sonnet 5.5
+```
+
+It prints precision and recall for two rules: the one in use (the two verdict questions)
+and a strict one that also counts the two recorded-only questions.
 
 ## Results on real questions
 
@@ -158,7 +218,8 @@ uv run python -m concord.evals --yes --record evals/recording.json  # all 20
 ```
 
 It refuses to start without `--yes` and stops starting new questions at `--max-cost`
-(default $25 of token spend). `--model` and `--effort` change the model.
+(default $25 of token spend). `--model` and `--effort` change the model, and `--drift-check`
+turns on the review of every output.
 
 ## Quick start
 
@@ -177,7 +238,7 @@ uv run python -m concord.harness   # print the scorecard
 ```
 src/concord/   library code
 examples/      runnable examples
-evals/         the 20 evaluation questions and their results
+evals/         the 20 evaluation questions and their results; the drift check's labelled cases
 docs/          tracing guide
 tests/         tests (mock model, no API key needed; blackboard tests need Redis running)
 ```

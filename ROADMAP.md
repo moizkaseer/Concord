@@ -10,7 +10,7 @@ Build in this order. Each phase ends with a test that must pass before the next 
 | 3 | Fault-injection harness | One command prints the scorecard for at least 50 scenarios, and runs in CI |
 | 4 | Tracing | A run with an injected dead worker shows the failed attempt, the requeue and the retry in one trace |
 | 5 | Real planner and specialists | 20 real questions finish end to end, with cost and quality recorded beside a single-agent baseline |
-| 6 | Task-drift check | Precision and recall measured against about 100 hand-labelled outputs |
+| 6 | Task-drift check | Precision and recall measured against about 100 labelled outputs |
 | 7 | Durability and recovery | Kill-and-resume passes ten times in a row with no finished subgoal re-run |
 | 8 | Re-planning (stretch) | A run with one permanently failing subgoal recovers through a re-plan |
 | 9 | Ship | A stranger can clone the repository, run one command and reproduce the scorecard |
@@ -28,6 +28,12 @@ Build in this order. Each phase ends with a test that must pass before the next 
   usually arrive reworded. Inputs are part of the comparison: the same instruction applied
   to different inputs is different work.
 - **Task drift is checked with a yes/no rubric** tuned on a labelled set, not a raw score.
+  The model answers the questions and the code turns the answers into a verdict.
+- **An output is reviewed before anything depends on it.** A reviewed run adds a
+  `reviewing` state between `leased` and `done`. Flagging after the fact would let the
+  next subgoal build on a bad output.
+- **A wrong reviewer is bounded.** One output per subgoal may be sent back; after that it
+  is kept and flagged. A reviewer that fails is skipped, on record.
 - **Specialists are a plain model-and-tool loop.** A graph framework is added only where a
   specialist needs branching.
 - **Scope: 5 to 20 subgoals, parallel readers, one writer.**
@@ -50,6 +56,6 @@ proposals.
 | Reworded duplicate subgoals caught | ≥ 90% | 0/16 (0%), similarity matching is off by default |
 | False alarms on healthy runs | ≤ 5% | 0/16 (0%) |
 | Time to detect a dead worker | ≤ 2 × lease length | about 0.4s at worst against a 0.80s limit |
-| Drift check precision and recall | ≥ 0.8 each | not built; 0/8 off-task outputs caught |
+| Drift check precision and recall | ≥ 0.8 each | built; reviewer not yet measured on the 100 labelled cases. Given a reviewer that is never wrong, 8/8 off-task outputs are sent back |
 | Tokens saved against a run with no supervisor | report the figure | 11.2% on runs with one exact duplicate |
 | Finished subgoals re-run after a crash | 0 | not measured |
