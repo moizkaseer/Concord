@@ -101,6 +101,11 @@ async def _main() -> int:
     parser.add_argument("--max-cost", type=float, default=25.0, help="stop starting new questions "
                         "once estimated token spend reaches this many dollars")  # fmt: skip
     parser.add_argument("--trace", action="store_true", help="send traces to the local Jaeger")
+    parser.add_argument(
+        "--drift-check",
+        action="store_true",
+        help="have the supervisor review every output before it is used (one more call each)",
+    )
     parser.add_argument("--yes", action="store_true", help="confirm that this spends money")
     parser.add_argument(
         "--redis-url", default=os.environ.get("REDIS_URL", "redis://localhost:6379/12")
@@ -146,6 +151,7 @@ async def _main() -> int:
                 item["question"],
                 corpus,
                 corpus_description=CORPUS_DESCRIPTION,
+                drift_check=args.drift_check,
             )
             results.append(result)
             tokens_in = result.team.input_tokens + result.single.input_tokens

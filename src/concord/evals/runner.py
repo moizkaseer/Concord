@@ -13,6 +13,7 @@ from redis.asyncio import Redis
 
 from concord.blackboard import Blackboard
 from concord.corpus import Corpus
+from concord.drift import ModelDriftChecker
 from concord.llm import Completion, ModelClient
 from concord.models import RunState
 from concord.planner import Planner
@@ -127,8 +128,13 @@ async def answer_with_team(
     timeout: float = 900.0,
     lease_ttl: float = 30.0,
     handler_timeout: float = 400.0,
+    drift_check: bool = False,
 ) -> Answer:
-    """Plan the question, run the plan under the supervisor, return the writer's output."""
+    """Plan the question, run the plan under the supervisor, return the writer's output.
+
+    With `drift_check`, the supervisor reviews every output before the subgoals that
+    depend on it may use it, at the cost of one more model call per subgoal.
+    """
     meter = Meter(client)
     started = time.monotonic()
     board = Blackboard(redis, f"eval-{uuid.uuid4().hex[:12]}")
@@ -138,7 +144,8 @@ async def answer_with_team(
             planner = Planner(meter, corpus_description=corpus_description)
             plan = await planner.plan(question)
             answer.subgoals = len(plan.subgoals)
-            await board.submit(plan.subgoals, supervised=True)
+            await board.submit(plan.subgoals, supervised=True, review=drift_check)
+            checker = ModelDriftChecker(meter, question) if drift_check else None
             pool = WorkerPool(
                 board,
                 specialist_handler(meter, question, corpus),
@@ -146,7 +153,7 @@ async def answer_with_team(
                 handler_timeout=handler_timeout,
             )
             supervisor = asyncio.create_task(
-                Supervisor(board, token_budget=token_budget, tick=0.2).run()
+                Supervisor(board, checker=checker, token_budget=token_budget, tick=0.2).run()
             )
             try:
                 status = await pool.run(timeout=timeout)

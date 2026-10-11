@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 
 from concord.corpus import Corpus, Passage
+from concord.drift import RUBRIC
+from concord.drift import SCHEMA as DRIFT_SCHEMA
 from concord.evals.__main__ import CORPUS_DESCRIPTION, CORPUS_FILES, report
 from concord.evals.runner import (
     JUDGE_SCHEMA,
@@ -187,3 +189,38 @@ async def test_real_recorded_questions_replay_to_the_recorded_results(redis):
         assert result.single.text == expected["single"]["text"]
         assert result.verdict.winner == expected["verdict"]["winner"]
         assert result.team.input_tokens == expected["team"]["input_tokens"]
+
+
+class ReviewedModel(FakeModel):
+    """The first research output is about the wrong thing, and the reviewer notices."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.research_prompts: list[str] = []
+
+    async def complete(self, prompt, *, system=None, schema=None, web_search=False):
+        if schema is DRIFT_SCHEMA:
+            wrong = "Kafka uses consumer offsets." in prompt.split("Output to review:")[1]
+            answers = {**dict.fromkeys(RUBRIC, True), "addresses_subgoal": not wrong}
+            reason = "it is about Kafka, not Temporal" if wrong else "it does the work"
+            return Completion(json.dumps({"reason": reason, **answers}), 200, 20)
+        if system == RESEARCH_SYSTEM:
+            self.research_prompts.append(prompt)
+            if len(self.research_prompts) == 1:
+                return Completion("Kafka uses consumer offsets.", 1000, 200)
+        return await super().complete(prompt, system=system, schema=schema, web_search=web_search)
+
+
+async def test_team_run_with_the_drift_check_retries_an_off_task_output(redis):
+    model = ReviewedModel()
+
+    answer = await answer_with_team(
+        redis, model, QUESTION, CORPUS, corpus_description="docs", drift_check=True
+    )
+
+    assert answer.completed and answer.text == "TEAM ANSWER"
+    assert answer.interventions == ["supervisor.flagged"]
+    # The retry was told what was wrong with the first attempt.
+    assert "it is about Kafka, not Temporal" in model.research_prompts[1]
+    # One plan, four specialist calls (research ran twice) and four reviews.
+    assert answer.model_calls == 9
