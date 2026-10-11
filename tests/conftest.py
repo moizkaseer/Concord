@@ -2,6 +2,10 @@ import os
 import uuid
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 
@@ -30,3 +34,17 @@ async def redis():
 @pytest.fixture
 def board(redis) -> Blackboard:
     return Blackboard(redis, uuid.uuid4().hex)
+
+
+# The tracer provider can only be installed once per process, so every test shares it.
+_exporter = InMemorySpanExporter()
+_provider = TracerProvider()
+_provider.add_span_processor(SimpleSpanProcessor(_exporter))
+trace.set_tracer_provider(_provider)
+
+
+@pytest.fixture
+def spans() -> InMemorySpanExporter:
+    """The spans finished during this test: `spans.get_finished_spans()`."""
+    _exporter.clear()
+    return _exporter
