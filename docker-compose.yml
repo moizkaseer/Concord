@@ -14,22 +14,6 @@ services:
       timeout: 3s
       retries: 5
 
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: concord
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-concord-dev}
-      POSTGRES_DB: concord
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U concord"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   # Trace viewer. UI on http://localhost:16686, OTLP/HTTP ingest on 4318.
   jaeger:
     image: jaegertracing/jaeger:2.1.0
@@ -39,4 +23,3 @@ services:
 
 volumes:
   redisdata:
-  pgdata:

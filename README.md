@@ -339,7 +339,7 @@ set another: `CONCORD_REDIS_PORT=6380 ./scripts/scorecard.sh`.
 For development:
 
 ```sh
-docker compose up -d    # Redis, plus Postgres and Jaeger (traces at http://localhost:16686)
+docker compose up -d    # Redis, plus Jaeger for traces at http://localhost:16686
 uv run pytest           # the tests; they empty Redis database 15 on localhost before and after
 uv run ruff check .     # lint
 ```
