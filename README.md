@@ -325,14 +325,23 @@ turns on the review of every output.
 
 ## Quick start
 
-Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and Docker.
+Requires [uv](https://docs.astral.sh/uv/) and Docker. One command reproduces the scorecard:
 
 ```sh
-uv sync                 # install dependencies
-docker compose up -d    # start Redis, Postgres and Jaeger
-uv run pytest           # run the tests
+./scripts/scorecard.sh
+```
+
+It starts Redis in Docker, waits until it is healthy, installs the dependencies and runs
+the 80 fault-injection scenarios and the 10 kill-and-resume trials, which takes about a
+minute. Add `--check` to exit with status 1 if a gate fails. If port 6379 is already taken,
+set another: `CONCORD_REDIS_PORT=6380 ./scripts/scorecard.sh`.
+
+For development:
+
+```sh
+docker compose up -d    # Redis, plus Postgres and Jaeger (traces at http://localhost:16686)
+uv run pytest           # the tests; they empty Redis database 15 on localhost before and after
 uv run ruff check .     # lint
-uv run python -m concord.harness   # print the scorecard
 ```
 
 ## Layout
@@ -342,5 +351,6 @@ src/concord/   library code
 examples/      runnable examples
 evals/         the 20 evaluation questions and their results; the drift check's labelled cases
 docs/          tracing guide
+scripts/       scorecard.sh, the one command that reproduces the scorecard
 tests/         tests (mock model, no API key needed; blackboard tests need Redis running)
 ```

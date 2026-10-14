@@ -30,3 +30,12 @@ jobs:
       - run: uv run pytest
       - name: Fault-injection scorecard
         run: uv run python -m concord.harness --check
+
+  # Phase 9's exit test: from a fresh checkout, the one documented command reproduces
+  # the scorecard. No services are provided; the script starts Redis itself.
+  reproduce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: ./scripts/scorecard.sh --check
