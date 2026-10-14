@@ -36,6 +36,8 @@ class Kind(StrEnum):
     HUNG_WORKER = "hung worker"
     SUPERVISOR_RESTART = "supervisor restart"
     OFF_TASK = "off-task output"
+    # Fails on every attempt, so no amount of retrying finishes the run.
+    PERMANENT_FAILURE = "permanently failing subgoal"
 
 
 DUPLICATE_KINDS = (Kind.EXACT_DUPLICATE, Kind.LIGHT_REWORD, Kind.PARAPHRASE)

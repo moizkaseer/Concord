@@ -1,10 +1,11 @@
 """The supervisor: watches a run's event stream and steps in when something goes wrong.
 
-It does five things:
+It does six things:
 
 * checks every subgoal before dispatch and reuses the output of an earlier duplicate;
 * reviews every finished output when the run asks for it, and sends back one that did
   not do the work its subgoal asked for;
+* re-plans around a subgoal that ran out of attempts, when the run allows it;
 * requeues subgoals whose worker stopped sending heartbeats;
 * halts the run when it goes over its token budget;
 * records each of these as a `supervisor.*` event with a reason, and as a span.
@@ -14,8 +15,8 @@ handled, so a restarted supervisor continues from where the last one stopped. Ha
 are safe to run twice for the same event. Run one supervisor per run: duplicate
 detection relies on seeing events in stream order.
 
-Reviews call a model and take seconds, so each runs as its own task. The supervisor keeps
-reading events and reclaiming leases while they are in flight.
+Reviews and re-plans call a model and take seconds, so each runs as its own task. The
+supervisor keeps reading events and reclaiming leases while they are in flight.
 """
 
 import asyncio
@@ -25,7 +26,9 @@ import time
 from concord.blackboard import Blackboard
 from concord.dedupe import Embedder, cosine, duplicate_key
 from concord.drift import DriftChecker, Outcome
+from concord.graph import DEFAULT_MAX_DEPTH, DEFAULT_MAX_SUBGOALS
 from concord.models import RunState, State, Subgoal
+from concord.replanner import ReplanContext, Replanner, check_patch
 from concord.tracing import (
     ATTEMPT,
     REASON,
@@ -40,6 +43,9 @@ from concord.tracing import (
 
 GROUP = "supervisor"
 REVIEW_OUTCOME = "concord.review.outcome"
+REPLAN_OUTCOME = "concord.replan.outcome"
+# Events whose handling calls a model, so they run as tasks of their own.
+SLOW = {"subgoal.reviewing", "subgoal.replanning"}
 
 
 class Supervisor:
@@ -51,6 +57,9 @@ class Supervisor:
         similarity_threshold: float = 0.9,
         checker: DriftChecker | None = None,
         max_rejections: int = 1,
+        replanner: Replanner | None = None,
+        max_subgoals: int = DEFAULT_MAX_SUBGOALS,
+        max_depth: int = DEFAULT_MAX_DEPTH,
         token_budget: int | None = None,
         tick: float = 0.2,
         consumer: str = "supervisor",
@@ -62,7 +71,10 @@ class Supervisor:
         # A wrong "drifted" verdict costs a retry. Capping how many outputs of one
         # subgoal may be sent back bounds what a bad reviewer can cost a run.
         self._max_rejections = max_rejections
-        self._reviews: set[asyncio.Task[None]] = set()
+        self._replanner = replanner
+        self._max_subgoals = max_subgoals  # limits a re-planned graph is checked against
+        self._max_depth = max_depth
+        self._slow: set[asyncio.Task[None]] = set()
         self._token_budget = token_budget
         self._tick = tick
         self._consumer = consumer
@@ -76,25 +88,25 @@ class Supervisor:
             await self._handle_pending()
             while True:
                 handled = await self._handle_batch()
-                self._reap_reviews()
+                self._reap_slow()
                 await self._reclaim()
                 await self._enforce_budget()
-                if handled or self._reviews:
+                if handled or self._slow:
                     continue
                 if (await self._board.status()).state != RunState.RUNNING:
                     return
         finally:
-            # A review cut short leaves its event unacknowledged, so the next supervisor
-            # is handed it again.
-            for task in self._reviews:
+            # A review or re-plan cut short leaves its event unacknowledged, so the next
+            # supervisor is handed it again.
+            for task in self._slow:
                 task.cancel()
-            for task in self._reviews:
+            for task in self._slow:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
     async def _handle_pending(self) -> None:
-        # Page by event id: reviews are acknowledged later, so reading from the start
-        # again would hand back the ones still in flight.
+        # Page by event id: reviews and re-plans are acknowledged later, so reading from
+        # the start again would hand back the ones still in flight.
         after = "0"
         while events := await self._board.read_events(
             GROUP, self._consumer, pending=True, after=after
@@ -109,20 +121,22 @@ class Supervisor:
 
     async def _handle_events(self, events: list[dict[str, str]]) -> None:
         for event in events:
-            if event["type"] == "subgoal.reviewing":
-                task = asyncio.create_task(self._review_and_ack(event))
-                self._reviews.add(task)
+            if event["type"] in SLOW:
+                self._slow.add(asyncio.create_task(self._handle_slow(event)))
                 continue
             await self._handle(event)
             await self._board.ack(GROUP, event["seq"])
 
-    def _reap_reviews(self) -> None:
-        for task in [t for t in self._reviews if t.done()]:
-            self._reviews.discard(task)
-            task.result()  # a review that crashed stops the supervisor, like any handler
+    def _reap_slow(self) -> None:
+        for task in [t for t in self._slow if t.done()]:
+            self._slow.discard(task)
+            task.result()  # a task that crashed stops the supervisor, like any handler
 
-    async def _review_and_ack(self, event: dict[str, str]) -> None:
-        await self._review(event["id"])
+    async def _handle_slow(self, event: dict[str, str]) -> None:
+        if event["type"] == "subgoal.reviewing":
+            await self._review(event["id"])
+        else:
+            await self._replan(event["id"])
         await self._board.ack(GROUP, event["seq"])
 
     async def _handle(self, event: dict[str, str]) -> None:
@@ -184,7 +198,7 @@ class Supervisor:
         match = await self._board.get(match_id)
         if match.state == State.DONE:
             return "reuse", match, reason
-        if match.state == State.FAILED:
+        if match.state in (State.FAILED, State.REPLACED):
             # Nothing to reuse, so this one has to do the work itself.
             return "dispatch", match, reason
         return "hold", match, reason
@@ -282,14 +296,53 @@ class Supervisor:
             else:
                 await self._board.reject(subgoal_id, verdict.reason, tokens=verdict.tokens)
 
+    async def _replan(self, subgoal_id: str) -> None:
+        """Re-plan around a subgoal that ran out of attempts, or fail it if that is not
+        possible."""
+        subgoal = await self._board.get(subgoal_id)
+        if subgoal.state != State.REPLANNING:
+            return  # already handled before a restart
+        with concord_span(
+            "supervisor.replan", parent=subgoal.parent_span, attributes=self._attributes(subgoal_id)
+        ) as span:
+            if self._replanner is None:
+                span.set_attribute(REPLAN_OUTCOME, "failed")
+                await self._board.give_up(subgoal_id, "no re-planner")
+                return
+            try:
+                graph = await self._board.graph()
+                done = [s.id for s in graph if s.state == State.DONE]
+                context = ReplanContext(subgoal, graph, await self._board.outputs(done))
+                patch = await self._replanner.replan(context)
+                # Checked here whoever wrote it: the patch changes the shape of the run.
+                check_patch(
+                    context, patch, max_subgoals=self._max_subgoals, max_depth=self._max_depth
+                )
+            except Exception as exc:
+                mark_error(span, exc)
+                span.set_attribute(REPLAN_OUTCOME, "failed")
+                reason = f"re-plan failed: {type(exc).__name__}: {exc}"
+                await self._board.give_up(subgoal_id, reason)
+                return
+            span.set_attribute(REPLAN_OUTCOME, "replanned")
+            span.set_attribute(REASON, patch.reason)
+            await self._board.replan(
+                subgoal_id, patch.add, patch.replace_with, patch.reason, tokens=patch.tokens
+            )
+            # Duplicates waiting on the failed subgoal will get nothing from it.
+            await self._release_waiters(subgoal_id, finished=False)
+
     async def _reclaim(self) -> None:
         """Take back subgoals from workers that stopped sending heartbeats."""
+        # Taken before the requeue: a worker can lease the subgoal again the moment it is
+        # back in the queue, and its retry must not start before the requeue span ends.
+        requeued_ns = time.time_ns()
         for lost in await self._board.reclaim_expired():
             subgoal = await self._board.get(lost.id)
             record_lost_attempt(
                 parent=subgoal.parent_span,
                 started_ms=lost.leased_at_ms,
-                ended_ns=time.time_ns(),
+                ended_ns=requeued_ns,
                 requeued=lost.requeued,
                 attributes={
                     **self._attributes(lost.id),

@@ -122,6 +122,8 @@ def _outcome(kind: Kind, mode: Mode, **changes) -> Outcome:
 def _detected(kind: Kind, mode: Mode) -> bool | None:
     if kind is Kind.OFF_TASK:
         return mode is Mode.REVIEW
+    if kind is Kind.PERMANENT_FAILURE:
+        return None if mode is Mode.BASELINE else mode is Mode.REPLAN
     always = {Kind.EXACT_DUPLICATE, Kind.DEAD_WORKER, Kind.HUNG_WORKER}
     return True if kind in always and mode is not Mode.BASELINE else None
 
@@ -132,6 +134,7 @@ def _clean_results() -> list[Outcome]:
             kind,
             mode,
             detected=_detected(kind, mode),
+            correct=kind is not Kind.PERMANENT_FAILURE or mode is Mode.REPLAN,
             detect_seconds=0.4 if kind is Kind.DEAD_WORKER and mode is not Mode.BASELINE else None,
         )
         for kind in Kind
@@ -172,6 +175,30 @@ def test_a_regression_fails_its_gate(kind, change, failing_gate):
 )
 def test_a_drift_check_regression_fails_its_gate(kind, change, failing_gate):
     _assert_gate_fails(kind, Mode.REVIEW, change, failing_gate)
+
+
+@pytest.mark.parametrize(
+    ("kind", "change", "failing_gate"),
+    [
+        (Kind.PERMANENT_FAILURE, {"detected": False}, "with re-planning on, every permanently"),
+        (Kind.PERMANENT_FAILURE, {"correct": False}, "with re-planning on, every permanently"),
+        (Kind.DEAD_WORKER, {"correct": False}, "with re-planning on, no run ends"),
+        (Kind.HEALTHY, {"false_alarms": 1}, "with re-planning on, no false alarms"),
+    ],
+)
+def test_a_replanning_regression_fails_its_gate(kind, change, failing_gate):
+    _assert_gate_fails(kind, Mode.REPLAN, change, failing_gate)
+
+
+async def test_permanent_failure_ends_the_run_unless_replanning_is_on(redis):
+    scenario = build(Kind.PERMANENT_FAILURE, seed=0)
+
+    without = await run_scenario(redis, scenario, Mode.SUPERVISED, FAST)
+    with_replan = await run_scenario(redis, scenario, Mode.REPLAN, FAST)
+
+    assert without.fault_injected and not without.completed and without.detected is False
+    assert with_replan.fault_injected and with_replan.detected is True
+    assert with_replan.correct and with_replan.false_alarms == 0
 
 
 def _assert_gate_fails(kind: Kind, mode: Mode, change: dict, failing_gate: str) -> None:

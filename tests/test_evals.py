@@ -19,6 +19,7 @@ from concord.evals.runner import (
 from concord.llm import Completion
 from concord.planner import PLAN_SCHEMA
 from concord.recording import RecordingClient, ReplayClient
+from concord.replanner import PATCH_SCHEMA
 from concord.specialists import RESEARCH_SYSTEM, RETRIEVAL_SYSTEM, SYNTHESIS_SYSTEM
 
 QUESTION = "How does Concord compare with Temporal on dead workers?"
@@ -224,3 +225,51 @@ async def test_team_run_with_the_drift_check_retries_an_off_task_output(redis):
     assert "it is about Kafka, not Temporal" in model.research_prompts[1]
     # One plan, four specialist calls (research ran twice) and four reviews.
     assert answer.model_calls == 9
+
+
+class ReplannedModel(FakeModel):
+    """Web search never works; the re-plan asks the project documents instead."""
+
+    def __init__(self) -> None:
+        super().__init__(fail_research=True)
+        self.patch_prompts: list[str] = []
+
+    async def complete(self, prompt, *, system=None, schema=None, web_search=False):
+        if schema is PATCH_SCHEMA:
+            self.patch_prompts.append(prompt)
+            draft = {
+                "id": "temporal-docs",
+                "specialist": "retrieval",
+                "description": "Find what Temporal's own documentation says about dead workers",
+                "depends_on": [],
+            }
+            reply = {
+                "reason": "web search is down",
+                "subgoals": [draft],
+                "replace_with": [draft["id"]],
+            }
+            return Completion(json.dumps(reply), 600, 80)
+        if system == RETRIEVAL_SYSTEM and "Temporal's own documentation" in prompt:
+            return Completion("Temporal uses heartbeat timeouts.", 500, 50)
+        return await super().complete(prompt, system=system, schema=schema, web_search=web_search)
+
+
+async def test_team_run_with_replanning_recovers_from_a_subgoal_that_always_fails(redis):
+    model = ReplannedModel()
+
+    answer = await answer_with_team(
+        redis, model, QUESTION, CORPUS, corpus_description="docs", replan=True
+    )
+
+    assert answer.completed and answer.text == "TEAM ANSWER"
+    assert answer.interventions == ["supervisor.replanned"]
+    (prompt,) = model.patch_prompts
+    assert "Failed subgoal: temporal" in prompt and "search is down" in prompt
+
+
+async def test_team_run_without_replanning_fails_on_the_same_subgoal(redis):
+    answer = await answer_with_team(
+        redis, ReplannedModel(), QUESTION, CORPUS, corpus_description="docs"
+    )
+
+    assert not answer.completed

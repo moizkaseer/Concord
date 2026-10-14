@@ -106,6 +106,11 @@ async def _main() -> int:
         action="store_true",
         help="have the supervisor review every output before it is used (one more call each)",
     )
+    parser.add_argument(
+        "--replan",
+        action="store_true",
+        help="re-plan around a subgoal that fails on every attempt, once per question",
+    )
     parser.add_argument("--yes", action="store_true", help="confirm that this spends money")
     parser.add_argument(
         "--redis-url", default=os.environ.get("REDIS_URL", "redis://localhost:6379/12")
@@ -152,6 +157,7 @@ async def _main() -> int:
                 corpus,
                 corpus_description=CORPUS_DESCRIPTION,
                 drift_check=args.drift_check,
+                replan=args.replan,
             )
             results.append(result)
             tokens_in = result.team.input_tokens + result.single.input_tokens

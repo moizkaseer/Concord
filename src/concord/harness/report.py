@@ -10,7 +10,15 @@ from concord.harness.scenarios import DUPLICATE_KINDS, HEALTHY_KINDS, Kind
 
 REWORDED_KINDS = (Kind.LIGHT_REWORD, Kind.PARAPHRASE)
 # Faults that happen while the run is in progress, as opposed to being part of the graph.
-RUNTIME_FAULTS = (Kind.DEAD_WORKER, Kind.HUNG_WORKER, Kind.SUPERVISOR_RESTART, Kind.OFF_TASK)
+RUNTIME_FAULTS = (
+    Kind.DEAD_WORKER,
+    Kind.HUNG_WORKER,
+    Kind.SUPERVISOR_RESTART,
+    Kind.OFF_TASK,
+    Kind.PERMANENT_FAILURE,
+)
+# Faults that are only handled when a feature that is off by default is switched on.
+OPT_IN = {Kind.OFF_TASK: Mode.REVIEW, Kind.PERMANENT_FAILURE: Mode.REPLAN}
 
 
 @dataclass(frozen=True)
@@ -128,7 +136,7 @@ def similarity_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
 
 def review_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
     """What reviewing every output does to a run, given a reviewer that is never wrong."""
-    others = tuple(k for k in Kind if k is not Kind.OFF_TASK and k not in HEALTHY_KINDS)
+    others = tuple(k for k in Kind if k not in OPT_IN and k not in HEALTHY_KINDS)
     rows = []
     for label, kinds in (
         (Kind.OFF_TASK, (Kind.OFF_TASK,)),
@@ -158,6 +166,36 @@ def review_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
     return table(headers, rows)
 
 
+def replan_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
+    """What allowing one re-plan per run does, given a re-planner whose patch works."""
+    others = tuple(k for k in Kind if k not in OPT_IN and k not in HEALTHY_KINDS)
+    rows = []
+    for label, kinds in (
+        (Kind.PERMANENT_FAILURE, (Kind.PERMANENT_FAILURE,)),
+        ("healthy (both kinds)", HEALTHY_KINDS),
+        ("every other fault", others),
+    ):
+        off, on = _merge(summaries, kinds, Mode.SUPERVISED), _merge(summaries, kinds, Mode.REPLAN)
+        replanned = "n/a"
+        if kinds == (Kind.PERMANENT_FAILURE,):
+            replanned = _ratio(on.detected, on.detectable)
+        rows.append(
+            [
+                label,
+                replanned,
+                f"{off.false_alarm_runs} -> {on.false_alarm_runs}",
+                f"{_ratio(off.correct, off.runs)} -> {_ratio(on.correct, on.runs)}",
+            ]
+        )
+    headers = [
+        "Scenario type",
+        "Re-planned around",
+        "Runs with a false alarm (off -> on)",
+        "Correct result (off -> on)",
+    ]
+    return table(headers, rows)
+
+
 def scorecard(
     summaries: dict[tuple[Kind, Mode], Summary], timings: Timings, trials: list[CrashTrial]
 ) -> str:
@@ -168,6 +206,7 @@ def scorecard(
     healthy = _merge(summaries, HEALTHY_KINDS, sup)
     dead = summaries[(Kind.DEAD_WORKER, sup)]
     off_task = summaries[(Kind.OFF_TASK, Mode.REVIEW)]
+    stuck = summaries[(Kind.PERMANENT_FAILURE, Mode.REPLAN)]
     with_dupes = _merge(summaries, (Kind.EXACT_DUPLICATE,), sup).mean_tokens
     without = summaries[(Kind.EXACT_DUPLICATE, Mode.BASELINE)].mean_tokens
     limit = 2 * timings.lease_ttl
@@ -194,6 +233,12 @@ def scorecard(
             "precision and recall >= 0.8",
             f"{_ratio(off_task.detected, off_task.detectable)} sent back, given a reviewer "
             "that is never wrong",
+        ],
+        [
+            "Runs that recover from a permanently failing subgoal",
+            "recover through a re-plan",
+            f"{_ratio(stuck.correct, stuck.runs)} with re-planning on, given a re-planner "
+            "whose patch works",
         ],
         [
             "Tokens saved on runs with an exact duplicate",
@@ -255,10 +300,15 @@ def gates(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> list
     dead = summaries[(Kind.DEAD_WORKER, sup)]
     hung = summaries[(Kind.HUNG_WORKER, sup)]
     restart = summaries[(Kind.SUPERVISOR_RESTART, sup)]
-    sound = _merge(summaries, tuple(k for k in Kind if k is not Kind.OFF_TASK), sup)
-    reviewed = _merge(summaries, tuple(Kind), Mode.REVIEW)
+    sound = _merge(summaries, tuple(k for k in Kind if k not in OPT_IN), sup)
+    reviewed = _merge(
+        summaries, tuple(k for k in Kind if k is not Kind.PERMANENT_FAILURE), Mode.REVIEW
+    )
     off_task = summaries[(Kind.OFF_TASK, Mode.REVIEW)]
     healthy_reviewed = _merge(summaries, HEALTHY_KINDS, Mode.REVIEW)
+    stuck = summaries[(Kind.PERMANENT_FAILURE, Mode.REPLAN)]
+    replanned = _merge(summaries, tuple(k for k in Kind if k is not Kind.OFF_TASK), Mode.REPLAN)
+    healthy_replanned = _merge(summaries, HEALTHY_KINDS, Mode.REPLAN)
     runtime = _merge(summaries, RUNTIME_FAULTS, sup)
     limit = 2 * timings.lease_ttl
     slowest = max(dead.detect_times, default=float("inf"))
@@ -294,7 +344,7 @@ def gates(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> list
             _ratio(restart.correct, restart.runs),
         ),
         Gate(
-            "no supervised run ends with a wrong output (off-task scenarios excluded)",
+            "no supervised run ends with a wrong output (opt-in faults excluded)",
             sound.correct == sound.runs,
             _ratio(sound.correct, sound.runs),
         ),
@@ -304,7 +354,8 @@ def gates(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> list
             _ratio(off_task.detected, off_task.detectable),
         ),
         Gate(
-            "with the drift check on, no run ends with a wrong output",
+            "with the drift check on, no run ends with a wrong output "
+            "(permanent failures excluded)",
             reviewed.correct == reviewed.runs,
             _ratio(reviewed.correct, reviewed.runs),
         ),
@@ -312,6 +363,22 @@ def gates(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> list
             "with the drift check on, no false alarms on healthy runs",
             healthy_reviewed.false_alarm_runs == 0,
             f"{healthy_reviewed.false_alarm_runs} of {healthy_reviewed.runs} runs",
+        ),
+        Gate(
+            "with re-planning on, every permanently failing subgoal is re-planned around",
+            stuck.detected == stuck.detectable and stuck.correct == stuck.runs,
+            f"{_ratio(stuck.detected, stuck.detectable)} re-planned, "
+            f"{_ratio(stuck.correct, stuck.runs)} correct",
+        ),
+        Gate(
+            "with re-planning on, no run ends with a wrong output (off-task excluded)",
+            replanned.correct == replanned.runs,
+            _ratio(replanned.correct, replanned.runs),
+        ),
+        Gate(
+            "with re-planning on, no false alarms on healthy runs",
+            healthy_replanned.false_alarm_runs == 0,
+            f"{healthy_replanned.false_alarm_runs} of {healthy_replanned.runs} runs",
         ),
     ]
 
@@ -352,6 +419,8 @@ def render(
         + similarity_table(summaries),
         "DRIFT CHECK (off by default; stand-in reviewer that is never wrong)\n\n"
         + review_table(summaries),
+        "RE-PLANNING (off by default; one re-plan per run; stand-in re-planner that asks for "
+        "the same work from another source)\n\n" + replan_table(summaries),
         "KILL AND RESUME (process killed with SIGKILL, run resumed by a new process; "
         "Redis stays up)\n\n" + crash_table(trials),
         "GATES\n\n"

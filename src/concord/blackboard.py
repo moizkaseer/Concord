@@ -2,8 +2,9 @@
 
 Layout for one run (`p` is the run's key prefix):
 
-    p:run              hash    state, total, done, failed, tokens, max_attempts, supervised,
-                               review, span
+    p:run              hash    state, total, done, failed, replaced, tokens, max_attempts,
+                               supervised, review, replans_left, span
+    p:ids              list    every subgoal id, in the order it was added
     p:sg:<id>          hash    one subgoal record
     p:dependents:<id>  set     ids that depend on <id>
     p:ready            list    ids waiting for a worker
@@ -61,10 +62,11 @@ local function unblock(p, id)
 end
 
 local function finish_if_terminal(p)
-  local r = redis.call('HMGET', p .. 'run', 'state', 'total', 'done', 'failed')
+  local r = redis.call('HMGET', p .. 'run', 'state', 'total', 'done', 'failed', 'replaced')
   if r[1] ~= 'running' then return end
   local failed = tonumber(r[4])
-  if tonumber(r[3]) + failed < tonumber(r[2]) then return end
+  -- A replaced subgoal has ended without failing the run: others do its work.
+  if tonumber(r[3]) + failed + tonumber(r[5] or 0) < tonumber(r[2]) then return end
   if failed == 0 then
     redis.call('HSET', p .. 'run', 'state', 'completed')
     log(p, 'type', 'run.completed')
@@ -112,7 +114,8 @@ local function fail_tree(p, id, err)
   finish_if_terminal(p)
 end
 
--- Put a subgoal back in the queue if it has attempts left, otherwise fail it.
+-- Put a subgoal back in the queue if it has attempts left. Otherwise hand it to the
+-- supervisor to re-plan around, if the run has a re-plan left, or fail it.
 local function retry_or_fail(p, id, err, retry_event, worker)
   local attempts = tonumber(redis.call('HGET', p .. 'sg:' .. id, 'attempts'))
   local max = tonumber(redis.call('HGET', p .. 'run', 'max_attempts'))
@@ -121,6 +124,12 @@ local function retry_or_fail(p, id, err, retry_event, worker)
     log(p, 'type', retry_event, 'id', id, 'reason', err, 'attempt', attempts, 'worker', worker)
     enqueue(p, id)
     return 'requeued'
+  end
+  if tonumber(redis.call('HGET', p .. 'run', 'replans_left') or '0') > 0 then
+    redis.call('HINCRBY', p .. 'run', 'replans_left', -1)
+    redis.call('HSET', p .. 'sg:' .. id, 'state', 'replanning', 'error', err)
+    log(p, 'type', 'subgoal.replanning', 'id', id, 'error', err)
+    return 'replanning'
   end
   fail_tree(p, id, err)
   return 'failed'
@@ -261,6 +270,70 @@ end
 return reclaimed
 """
 
+# The patch was checked by the caller. `adds` and `rewires` are JSON lists of
+# {id, deps, deps_json}: subgoals to add, and the failed subgoal's dependents with their
+# new dependency lists. Dependency counts are recomputed from those lists.
+_REPLAN = """
+local p, id, reason, span = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
+local adds, rewires, replaced_by = cjson.decode(ARGV[5]), cjson.decode(ARGV[6]), ARGV[7]
+local tokens = tonumber(ARGV[8])
+local key = p .. 'sg:' .. id
+if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return 0 end
+if redis.call('HGET', key, 'state') ~= 'replanning' then return 0 end
+for _, s in ipairs(adds) do
+  if redis.call('EXISTS', p .. 'sg:' .. s.id) == 1 then return redis.error_reply('id taken') end
+end
+
+local function unmet_of(deps)
+  local n = 0
+  for _, dep in ipairs(deps) do
+    if redis.call('HGET', p .. 'sg:' .. dep, 'state') ~= 'done' then n = n + 1 end
+  end
+  return n
+end
+
+local added = {}
+for _, s in ipairs(adds) do
+  redis.call('HSET', p .. 'sg:' .. s.id, 'description', s.description,
+    'specialist', s.specialist, 'depends_on', s.deps_json, 'state', 'pending',
+    'unmet', unmet_of(s.deps), 'attempts', 0, 'parent_span', span, 'replaces', id)
+  for _, dep in ipairs(s.deps) do redis.call('SADD', p .. 'dependents:' .. dep, s.id) end
+  redis.call('RPUSH', p .. 'ids', s.id)
+  added[#added + 1] = s.id
+end
+for _, c in ipairs(rewires) do
+  redis.call('HSET', p .. 'sg:' .. c.id, 'depends_on', c.deps_json, 'unmet', unmet_of(c.deps))
+  for _, dep in ipairs(c.deps) do redis.call('SADD', p .. 'dependents:' .. dep, c.id) end
+end
+redis.call('DEL', p .. 'dependents:' .. id)
+redis.call('HSET', key, 'state', 'replaced', 'replaced_by', replaced_by)
+redis.call('HINCRBY', p .. 'run', 'replaced', 1)
+redis.call('HINCRBY', p .. 'run', 'total', #adds)
+redis.call('HINCRBY', p .. 'run', 'tokens', tokens)
+log(p, 'type', 'supervisor.replanned', 'id', id, 'reason', reason,
+  'added', table.concat(added, ','), 'replaced_by', replaced_by)
+
+for _, s in ipairs(adds) do
+  if tonumber(redis.call('HGET', p .. 'sg:' .. s.id, 'unmet')) == 0 then unblock(p, s.id) end
+end
+for _, c in ipairs(rewires) do
+  local ckey = p .. 'sg:' .. c.id
+  local cur = redis.call('HMGET', ckey, 'unmet', 'state')
+  if tonumber(cur[1]) == 0 and cur[2] == 'pending' then unblock(p, c.id) end
+end
+finish_if_terminal(p)
+return 1
+"""
+
+_GIVE_UP = """
+local p, id, reason = ARGV[1], ARGV[2], ARGV[3]
+local key = p .. 'sg:' .. id
+if redis.call('HGET', key, 'state') ~= 'replanning' then return 0 end
+log(p, 'type', 'supervisor.replan_failed', 'id', id, 'reason', reason)
+fail_tree(p, id, redis.call('HGET', key, 'error'))
+return 1
+"""
+
 _HALT = """
 local p, reason = ARGV[1], ARGV[2]
 if redis.call('HGET', p .. 'run', 'state') ~= 'running' then return 0 end
@@ -304,6 +377,8 @@ class Blackboard:
         self._reject = redis.register_script(_LIB + _REJECT)
         self._reclaim = redis.register_script(_LIB + _RECLAIM)
         self._halt = redis.register_script(_LIB + _HALT)
+        self._replan = redis.register_script(_LIB + _REPLAN)
+        self._give_up = redis.register_script(_LIB + _GIVE_UP)
 
     # --- submitting and reading -------------------------------------------------
 
@@ -313,6 +388,7 @@ class Blackboard:
         *,
         supervised: bool = False,
         review: bool = False,
+        replans: int = 0,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         max_subgoals: int = DEFAULT_MAX_SUBGOALS,
         max_depth: int = DEFAULT_MAX_DEPTH,
@@ -323,9 +399,13 @@ class Blackboard:
         reaches the worker queue, so a supervisor must be running for the run to progress.
         With `review=True` as well, each finished output waits for the supervisor's drift
         check before the subgoals depending on it are released.
+        With `replans` above zero, a subgoal that runs out of attempts waits for the
+        supervisor to re-plan around it instead of failing, up to that many times per run.
         """
         if review and not supervised:
             raise ValueError("review needs a supervised run: the supervisor does the reviewing")
+        if replans and not supervised:
+            raise ValueError("re-planning needs a supervised run: the supervisor re-plans")
         validate_graph(specs, max_subgoals=max_subgoals, max_depth=max_depth)
         if await self._redis.exists(self._p + "run"):
             raise RunExistsError(f"run {self.run_id!r} already has a graph")
@@ -335,13 +415,14 @@ class Blackboard:
         enclosing = current_traceparent()
         with self._write("submit"):
             span = enclosing or current_traceparent()
-            await self._store(specs, supervised, review, max_attempts, span)
+            await self._store(specs, supervised, review, replans, max_attempts, span)
 
     async def _store(
         self,
         specs: Sequence[SubgoalSpec],
         supervised: bool,
         review: bool,
+        replans: int,
         max_attempts: int,
         span: str,
     ) -> None:
@@ -354,14 +435,17 @@ class Blackboard:
                     "total": len(specs),
                     "done": 0,
                     "failed": 0,
+                    "replaced": 0,
                     "tokens": 0,
                     "max_attempts": max_attempts,
                     "supervised": int(supervised),
                     "review": int(review),
+                    "replans_left": replans,
                     "span": span,
                 },
             )
             pipe.xadd(self._events, {"type": "run.submitted", "total": len(specs)})
+            pipe.rpush(self._p + "ids", *(spec.id for spec in specs))
             for spec in specs:
                 is_root = not spec.depends_on
                 pipe.hset(
@@ -403,9 +487,15 @@ class Blackboard:
             reused_from=record.get("reused_from"),
             rejections=int(record.get("rejections", 0)),
             feedback=record.get("feedback"),
+            replaces=record.get("replaces"),
+            replaced_by=json.loads(record.get("replaced_by", "[]")),
             parent_span=record.get("parent_span") or None,
             span=record.get("span") or None,
         )
+
+    async def graph(self) -> list[Subgoal]:
+        """Every subgoal of the run, including any added by a re-plan, in the order added."""
+        return [await self.get(i) for i in await self._redis.lrange(self._p + "ids", 0, -1)]
 
     async def outputs(self, subgoal_ids: Sequence[str]) -> dict[str, str]:
         """Outputs of the given subgoals; ids with no output yet are left out."""
@@ -432,6 +522,7 @@ class Blackboard:
             total=int(record["total"]),
             done=int(record["done"]),
             failed=int(record["failed"]),
+            replaced=int(record.get("replaced", 0)),
             tokens=int(record["tokens"]),
             reason=record.get("reason"),
             span=record.get("span") or None,
@@ -518,6 +609,53 @@ class Blackboard:
             Reclaimed(subgoal_id, worker, int(attempt), int(leased_at), outcome == "requeued")
             for subgoal_id, worker, attempt, leased_at, outcome in rows
         ]
+
+    async def replan(
+        self,
+        subgoal_id: str,
+        add: Sequence[SubgoalSpec],
+        replace_with: Sequence[str],
+        reason: str,
+        *,
+        tokens: int = 0,
+    ) -> bool:
+        """Re-plan around a subgoal that ran out of attempts: add `add`, and have every
+        subgoal that depended on it depend on `replace_with` instead. The caller checks
+        the patch first (`concord.replanner.check_patch`). `tokens` is what writing the
+        patch cost. False if the subgoal was not waiting for a re-plan or the run has ended.
+        """
+
+        def entry(subgoal_id: str, deps: list[str]) -> dict:
+            return {"id": subgoal_id, "deps": deps, "deps_json": json.dumps(deps)}
+
+        adds = [
+            {**entry(s.id, s.depends_on), "description": s.description, "specialist": s.specialist}
+            for s in add
+        ]
+        rewires = []
+        for child in sorted(await self._redis.smembers(self._p + "dependents:" + subgoal_id)):
+            deps = (await self.get(child)).depends_on
+            new = [d for d in deps if d != subgoal_id]
+            new += [r for r in replace_with if r not in new]
+            rewires.append(entry(child, new))
+        run = await self._redis.hget(self._p + "run", "span") or ""
+        args = [
+            self._p,
+            subgoal_id,
+            reason,
+            run,
+            json.dumps(adds),
+            json.dumps(rewires),
+            json.dumps(list(replace_with)),
+            tokens,
+        ]
+        with self._write("replan", subgoal_id):
+            return bool(await self._replan(args=args))
+
+    async def give_up(self, subgoal_id: str, reason: str) -> bool:
+        """Fail a subgoal that was waiting for a re-plan, and everything depending on it."""
+        with self._write("give_up", subgoal_id):
+            return bool(await self._give_up(args=[self._p, subgoal_id, reason]))
 
     async def halt(self, reason: str) -> bool:
         """Stop the run. False if it had already ended."""

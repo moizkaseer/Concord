@@ -11,8 +11,12 @@ class State(StrEnum):
     READY = "ready"  # in the queue, waiting for a worker
     LEASED = "leased"  # a worker holds it
     REVIEWING = "reviewing"  # a worker finished it; waiting for the supervisor's drift check
+    # Out of attempts; waiting for the supervisor to re-plan around it. Its dependents
+    # stay blocked meanwhile.
+    REPLANNING = "replanning"
     DONE = "done"
     FAILED = "failed"
+    REPLACED = "replaced"  # given up on; the subgoals in `replaced_by` took its place
 
 
 class RunState(StrEnum):
@@ -43,6 +47,8 @@ class Subgoal(SubgoalSpec):
     reused_from: str | None = None  # set when the supervisor copied another subgoal's output
     rejections: int = 0  # outputs the drift check sent back
     feedback: str | None = None  # why the last output was sent back, for the next attempt
+    replaces: str | None = None  # the subgoal a re-plan added this one in place of
+    replaced_by: list[str] = Field(default_factory=list)  # set once this one is replaced
     # Trace context, as W3C traceparent strings.
     parent_span: str | None = None  # the run's root span; this subgoal's spans go under it
     span: str | None = None  # the span that finished this subgoal; dependents link to it
@@ -53,6 +59,7 @@ class RunStatus(BaseModel):
     total: int
     done: int
     failed: int = 0
+    replaced: int = 0  # subgoals given up on and re-planned around; they do not fail the run
     tokens: int = 0
     reason: str | None = None  # why the run failed or was halted
     span: str | None = None  # trace context of the run's root span

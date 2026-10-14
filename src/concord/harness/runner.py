@@ -14,7 +14,8 @@ from concord.dedupe import HashingEmbedder
 from concord.drift import DriftVerdict
 from concord.drift import Outcome as Verdict
 from concord.harness.scenarios import DUPLICATE_KINDS, Kind, Scenario
-from concord.models import RunState
+from concord.models import RunState, State, SubgoalSpec
+from concord.replanner import Patch, ReplanContext
 from concord.supervisor import Supervisor
 from concord.worker import WorkerPool, WorkResult
 
@@ -24,6 +25,7 @@ class Mode(StrEnum):
     SUPERVISED = "supervisor"
     SIMILARITY = "supervisor + similarity"
     REVIEW = "supervisor + drift check"
+    REPLAN = "supervisor + re-planning"
 
 
 @dataclass(frozen=True)
@@ -67,7 +69,8 @@ class _Handler:
     async def __call__(self, subgoal, inputs) -> WorkResult:
         self.calls += 1
         await asyncio.sleep(self._timings.work_seconds)
-        output = self._scenario.expected[subgoal.id]
+        # A subgoal added by a re-plan does the work of the one it replaced.
+        output = self._scenario.expected[subgoal.replaces or subgoal.id]
         # Word counts stand in for tokens, as in the mock model client.
         words = [subgoal.description, output, *inputs.values()]
         tokens = sum(len(text.split()) for text in words)
@@ -85,6 +88,10 @@ class _Handler:
             if kind is Kind.OFF_TASK:
                 await self._mark_fault(subgoal.id)
                 return WorkResult("An unrelated answer about something else entirely", tokens)
+            if kind is Kind.PERMANENT_FAILURE:
+                await self._mark_fault(subgoal.id)
+        if subgoal.id == self._scenario.target and self._scenario.kind is Kind.PERMANENT_FAILURE:
+            raise RuntimeError("source unreachable")
         return WorkResult(output, tokens)
 
     async def _mark_fault(self, subgoal_id: str) -> None:
@@ -104,6 +111,21 @@ class _OracleChecker:
         if output == self._scenario.expected[subgoal.id]:
             return DriftVerdict(Verdict.ON_TASK)
         return DriftVerdict(Verdict.DRIFTED, "the output is not about the subgoal")
+
+
+class _AlternativeSource:
+    """Stands in for the model re-planner: replaces the failed subgoal with one that asks
+    for the same thing from another source, read by the same dependents."""
+
+    async def replan(self, context: ReplanContext) -> Patch:
+        failed = context.failed
+        alternative = SubgoalSpec(
+            id=f"{failed.id}-alt",
+            description=f"{failed.description}, using a different source",
+            depends_on=failed.depends_on,
+            specialist=failed.specialist,
+        )
+        return Patch([alternative], [alternative.id], "the source could not be reached")
 
 
 async def _restart_supervisor(board, make_supervisor, first: asyncio.Task, delay: float) -> None:
@@ -137,11 +159,19 @@ async def run_scenario(
     def make_supervisor() -> Supervisor:
         embedder = HashingEmbedder() if mode is Mode.SIMILARITY else None
         checker = _OracleChecker(scenario) if mode is Mode.REVIEW else None
-        return Supervisor(board, embedder=embedder, checker=checker, tick=timings.tick)
+        replanner = _AlternativeSource() if mode is Mode.REPLAN else None
+        return Supervisor(
+            board, embedder=embedder, checker=checker, replanner=replanner, tick=timings.tick
+        )
 
     started = time.monotonic()
     try:
-        await board.submit(scenario.specs, supervised=supervised, review=mode is Mode.REVIEW)
+        await board.submit(
+            scenario.specs,
+            supervised=supervised,
+            review=mode is Mode.REVIEW,
+            replans=1 if mode is Mode.REPLAN else 0,
+        )
         supervisor = None
         if supervised:
             supervisor = asyncio.create_task(make_supervisor().run())
@@ -173,8 +203,13 @@ async def _score(
     status = await board.status()
     events = await board.events()
     completed = status.state == RunState.COMPLETED
-    outputs = await board.outputs(list(scenario.expected))
-    correct = completed and outputs == scenario.expected
+    # Every subgoal must hold its expected output, where a re-plan's replacement is held
+    # to the output of the subgoal it replaced.
+    graph = await board.graph()
+    outputs = {s.id: s.output for s in graph if s.state != State.REPLACED}
+    wanted = {s.id: scenario.expected[s.replaces or s.id] for s in graph if s.id in outputs}
+    covered = {s.replaces or s.id for s in graph if s.id in outputs}
+    correct = completed and outputs == wanted and covered == set(scenario.expected)
 
     kind, target = scenario.kind, scenario.target
     pair = {target, scenario.partner}
@@ -192,6 +227,9 @@ async def _score(
         if kind is Kind.OFF_TASK:
             # Only a supervisor with a drift check emits this.
             return event["type"] == "supervisor.flagged" and event["id"] == target
+        if kind is Kind.PERMANENT_FAILURE:
+            # Only a supervisor with a re-planner emits this.
+            return event["type"] == "supervisor.replanned" and event["id"] == target
         return False
 
     def detects(event: dict[str, str]) -> bool:

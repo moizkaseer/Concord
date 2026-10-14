@@ -10,7 +10,9 @@ specialists and Claude client have run on 19 real questions with Claude Sonnet 5
 [Results on real questions](#results-on-real-questions). The drift check is built and its
 runtime behaviour is measured; how often its model reviewer is right has not been measured
 yet (see [Drift check](#drift-check)). A run survives the process working it being killed
-and resumed by a new one (see [Resuming a run](#resuming-a-run)).
+and resumed by a new one (see [Resuming a run](#resuming-a-run)), and can re-plan around a
+subgoal that fails on every attempt (see [Re-planning](#re-planning)); the model re-planner
+has not been run against the real API.
 See [ROADMAP.md](ROADMAP.md) for the build plan.
 
 ## What works today
@@ -30,6 +32,8 @@ See [ROADMAP.md](ROADMAP.md) for the build plan.
     (same normalized text and same inputs, or embedding similarity above a threshold);
   - reviews each finished output, when the run asks for it, and sends back one that did
     not do the work its subgoal asked for (see [Drift check](#drift-check));
+  - re-plans around a subgoal that ran out of attempts, when the run allows it (see
+    [Re-planning](#re-planning));
   - halts the run when it goes over its token budget;
   - logs every intervention as a `supervisor.*` event with its reason.
 - **Resuming**: a run's state is all in Redis, so a new process can pick up a run whose
@@ -80,7 +84,7 @@ print(await board.interventions())
 
 ## Scorecard
 
-Measured by the fault-injection harness: 72 scripted scenarios, each with one injected
+Measured by the fault-injection harness: 80 scripted scenarios, each with one injected
 fault, played with and without the supervisor. Everything runs on a mock model, so the token
 figures are word counts and only the relative difference means anything.
 
@@ -91,6 +95,7 @@ figures are word counts and only the relative difference means anything.
 | False alarms on healthy runs | ≤ 5% | 0/16 (0%) |
 | Time to detect a dead worker | ≤ 0.80s (2 × lease) | about 0.4s at worst |
 | Off-task output caught | precision and recall ≥ 0.8 | reviewer accuracy not measured yet; 8/8 sent back given a reviewer that is never wrong |
+| Runs that recover from a permanently failing subgoal | recover through a re-plan | 8/8 with re-planning on, given a re-planner whose patch works; 0/8 without |
 | Tokens saved on runs with an exact duplicate | report the figure | 11.2% |
 | Finished subgoals re-run after a crash | 0 | 0 in 10 kill-and-resume trials |
 
@@ -103,6 +108,7 @@ What the supervisor changes, by fault type:
 | Hung worker | 8/8 | 8/8 (caught by the worker's own deadline, not the supervisor) |
 | Supervisor restart mid-run | not applicable | 8/8 |
 | Off-task output | 0/8 | 0/8 by default; 8/8 with the drift check on and a reviewer that is never wrong |
+| Permanently failing subgoal | 0/8 | 0/8 by default; 8/8 with re-planning on |
 
 Two gaps are visible and left in on purpose:
 
@@ -164,6 +170,53 @@ are redone in each trial; that is the cost of a crash, and it is reported. A loc
 
 A resumed run waits up to one lease length (30 seconds by default) before redoing the work
 that was in flight.
+
+## Re-planning
+
+A subgoal can fail on every attempt for a reason retrying will not fix: a source that
+cannot be reached, or a request no specialist can satisfy as worded. Without re-planning,
+it fails and takes everything that depends on it down with it.
+
+With `replans=N` at submit, a subgoal that runs out of attempts moves to `replanning`
+instead, and its dependents stay blocked. The supervisor shows a re-planner the question,
+the whole graph with each subgoal's state, the outputs finished so far and the error, and
+asks for a patch:
+
+- subgoals to add, which may depend on finished subgoals and on each other;
+- which subgoals take the failed one's place: everything that depended on it depends on
+  those instead. Empty means the dependents go ahead without it. A failed final subgoal
+  must name exactly one stand-in, which produces the run's result.
+
+The re-planner proposes and the code decides. The supervisor checks every patch, whoever
+wrote it, before one Lua script applies it: new ids must be new, nothing may depend on a
+failed subgoal, and the graph as it would be must have no cycles and stay inside the size
+and depth limits. The failed subgoal becomes `replaced` and no longer counts against the
+run. What can go wrong is bounded:
+
+- A run gets `N` re-plans in all. Once they are used, a subgoal that runs out of attempts
+  fails as before, so a re-plan whose new subgoals fail too costs at most `N` re-plans.
+- If the re-planner errors or its patch fails the checks, the subgoal fails as it would
+  have without re-planning, and `supervisor.replan_failed` records why.
+- A re-plan in flight when the supervisor stops is finished by the next one.
+
+```python
+from concord.replanner import ModelReplanner
+
+await board.submit(specs, supervised=True, replans=1)
+supervisor = Supervisor(board, replanner=ModelReplanner(client, question))
+```
+
+`ModelReplanner` asks the model for the patch and, if the checks reject it, gives the
+model the reason and asks once more. The evaluation turns it on with `--replan`.
+
+**What has been measured.** In the harness, a scenario where one subgoal fails on every
+attempt ends with the run failed 8 times in 8 without re-planning. With one re-plan
+allowed and a stand-in re-planner that asks for the same work from another source, all 8
+recover with the right result, and the other 72 scenarios are unchanged with no false
+alarms. This shows the runtime applies a working patch correctly.
+
+**What has not.** Whether a model writes a patch that works. `ModelReplanner` is tested
+against scripted replies only. It has not been run on the real questions.
 
 ## Drift check
 

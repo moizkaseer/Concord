@@ -15,8 +15,9 @@ from concord.blackboard import Blackboard
 from concord.corpus import Corpus
 from concord.drift import ModelDriftChecker
 from concord.llm import Completion, ModelClient
-from concord.models import RunState
+from concord.models import RunState, State, Subgoal
 from concord.planner import Planner
+from concord.replanner import ModelReplanner
 from concord.specialists import specialist_handler
 from concord.supervisor import Supervisor
 from concord.tracing import workflow_span
@@ -129,11 +130,13 @@ async def answer_with_team(
     lease_ttl: float = 30.0,
     handler_timeout: float = 400.0,
     drift_check: bool = False,
+    replan: bool = False,
 ) -> Answer:
     """Plan the question, run the plan under the supervisor, return the writer's output.
 
     With `drift_check`, the supervisor reviews every output before the subgoals that
-    depend on it may use it, at the cost of one more model call per subgoal.
+    depend on it may use it, at the cost of one more model call per subgoal. With `replan`,
+    a subgoal that fails on every attempt is re-planned around once per run.
     """
     meter = Meter(client)
     started = time.monotonic()
@@ -144,8 +147,11 @@ async def answer_with_team(
             planner = Planner(meter, corpus_description=corpus_description)
             plan = await planner.plan(question)
             answer.subgoals = len(plan.subgoals)
-            await board.submit(plan.subgoals, supervised=True, review=drift_check)
+            await board.submit(
+                plan.subgoals, supervised=True, review=drift_check, replans=int(replan)
+            )
             checker = ModelDriftChecker(meter, question) if drift_check else None
+            replanner = ModelReplanner(meter, question) if replan else None
             pool = WorkerPool(
                 board,
                 specialist_handler(meter, question, corpus),
@@ -153,7 +159,13 @@ async def answer_with_team(
                 handler_timeout=handler_timeout,
             )
             supervisor = asyncio.create_task(
-                Supervisor(board, checker=checker, token_budget=token_budget, tick=0.2).run()
+                Supervisor(
+                    board,
+                    checker=checker,
+                    replanner=replanner,
+                    token_budget=token_budget,
+                    tick=0.2,
+                ).run()
             )
             try:
                 status = await pool.run(timeout=timeout)
@@ -164,17 +176,27 @@ async def answer_with_team(
                     async with asyncio.timeout(5):
                         await supervisor
         answer.interventions = [e["type"] for e in await board.interventions()]
+        final = await _final_subgoal(board, plan.answer_id)
         if status.state == RunState.COMPLETED:
             answer.completed = True
-            answer.text = (await board.get(plan.answer_id)).output or ""
+            answer.text = final.output or ""
         else:
-            cause = (await board.get(plan.answer_id)).error
+            cause = final.error
             answer.error = ": ".join(filter(None, [status.reason, cause])) or str(status.state)
     except Exception as exc:
         answer.error = f"{type(exc).__name__}: {exc}"
     finally:
         await board.destroy()
     return answer.spend(meter, started)
+
+
+async def _final_subgoal(board: Blackboard, answer_id: str) -> Subgoal:
+    """The planned answer subgoal, or the one a re-plan put in its place."""
+    subgoal = await board.get(answer_id)
+    while subgoal.state == State.REPLACED:
+        # A replaced final subgoal always has exactly one stand-in (see check_patch).
+        subgoal = await board.get(subgoal.replaced_by[0])
+    return subgoal
 
 
 async def answer_alone(

@@ -52,10 +52,11 @@ attached warnings when an earlier version of this code nested them.
 | `concord.supervisor.check` | internal | `concord.check.outcome` (`dispatch`, `reuse` or `hold`), `concord.check.duplicate_of`, `concord.reason` |
 | `concord.supervisor.release` | internal | same as `check`; emitted when a held duplicate is resolved |
 | `concord.supervisor.review` | internal | `concord.review.outcome` (`on_task`, `drifted`, `unclear` or `skipped`), `concord.reason`; linked to the attempt it reviewed |
+| `concord.supervisor.replan` | internal | `concord.replan.outcome` (`replanned` or `failed`), `concord.reason` |
 | `concord.attempt.lost` | internal | `concord.subgoal.attempt`, `concord.worker.id`, `error.type` = `lease_expired` |
 | `concord.supervisor.requeue` / `.fail` | internal | `concord.reason` |
 | `concord.supervisor.halt` | internal | `concord.reason` |
-| `concord.blackboard.{submit,dispatch,complete,fail,reuse,hold,accept,reject,halt}` | internal | `db.system.name` = `redis`, `concord.subgoal.id` |
+| `concord.blackboard.{submit,dispatch,complete,fail,reuse,hold,accept,reject,replan,give_up,halt}` | internal | `db.system.name` = `redis`, `concord.subgoal.id` |
 
 The `gen_ai.*` names follow the OpenTelemetry GenAI semantic conventions. Those are still
 in Development status with no tagged release, so the code is written against

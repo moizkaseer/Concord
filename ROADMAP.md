@@ -37,6 +37,10 @@ Build in this order. Each phase ends with a test that must pass before the next 
 - **A run resumes from Redis alone.** A new process attaches to the run id; expired leases
   are requeued and unacknowledged supervisor events are claimed by the new supervisor, so
   no recorded output is redone. Redis is the one component that must survive.
+- **Re-planning patches the graph rather than starting over.** A subgoal out of attempts
+  waits in `replanning` while the supervisor asks for subgoals to add and a stand-in for
+  its dependents. The patch is checked as a whole graph (cycles, size, depth) before one
+  script applies it, and a run has a fixed number of re-plans.
 - **Specialists are a plain model-and-tool loop.** A graph framework is added only where a
   specialist needs branching.
 - **Scope: 5 to 20 subgoals, parallel readers, one writer.**
@@ -50,7 +54,7 @@ same-model blind comparison. The supervisor made no interventions on these healt
 
 ## Scorecard
 
-Measured by `uv run python -m concord.harness` on a mock model (72 scenarios). Targets are
+Measured by `uv run python -m concord.harness` on a mock model (80 scenarios). Targets are
 proposals.
 
 | Measure | Target | Result |
@@ -61,4 +65,5 @@ proposals.
 | Time to detect a dead worker | ≤ 2 × lease length | about 0.4s at worst against a 0.80s limit |
 | Drift check precision and recall | ≥ 0.8 each | built; reviewer not yet measured on the 100 labelled cases. Given a reviewer that is never wrong, 8/8 off-task outputs are sent back |
 | Tokens saved against a run with no supervisor | report the figure | 11.2% on runs with one exact duplicate |
+| Runs that recover from a permanently failing subgoal | recover through a re-plan | 8/8 with re-planning on, given a re-planner whose patch works; the model re-planner has not run on real questions |
 | Finished subgoals re-run after a crash | 0 | 0 in 10 kill-and-resume trials (process killed with SIGKILL; Redis kept up) |
