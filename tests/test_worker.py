@@ -128,3 +128,18 @@ async def test_long_handler_keeps_its_lease_through_heartbeats(board):
 
     assert status.state == RunState.COMPLETED
     assert (await board.get("a")).attempts == 1
+
+
+async def test_workers_of_different_pools_never_share_a_name(board):
+    async def handler(subgoal, inputs):
+        await asyncio.sleep(0.02)
+        return WorkResult("ok")
+
+    await board.submit([spec(f"r{n}") for n in range(8)])
+    pools = [WorkerPool(board, handler, size=2, poll_interval=0.01) for _ in range(2)]
+    await asyncio.gather(*(pool.run(timeout=10) for pool in pools))
+
+    owners = {e["worker"] for e in await board.events() if e["type"] == "subgoal.leased"}
+    by_pool = [{w for w in owners if w.startswith(pool.pool_id)} for pool in pools]
+    assert pools[0].pool_id != pools[1].pool_id
+    assert all(by_pool) and by_pool[0].isdisjoint(by_pool[1])

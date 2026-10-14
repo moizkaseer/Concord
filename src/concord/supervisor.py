@@ -70,12 +70,12 @@ class Supervisor:
     async def run(self) -> None:
         """Supervise until the run has ended and every event has been handled."""
         await self._board.ensure_group(GROUP)
+        await self._board.claim_pending(GROUP, self._consumer)
         try:
             # Events delivered to a previous supervisor that stopped before acknowledging.
-            # They come back all at once, so one read is enough.
-            await self._handle_batch(pending=True)
+            await self._handle_pending()
             while True:
-                handled = await self._handle_batch(pending=False)
+                handled = await self._handle_batch()
                 self._reap_reviews()
                 await self._reclaim()
                 await self._enforce_budget()
@@ -92,10 +92,22 @@ class Supervisor:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
 
-    async def _handle_batch(self, *, pending: bool) -> int:
-        events = await self._board.read_events(
-            GROUP, self._consumer, pending=pending, block=None if pending else self._tick
-        )
+    async def _handle_pending(self) -> None:
+        # Page by event id: reviews are acknowledged later, so reading from the start
+        # again would hand back the ones still in flight.
+        after = "0"
+        while events := await self._board.read_events(
+            GROUP, self._consumer, pending=True, after=after
+        ):
+            await self._handle_events(events)
+            after = events[-1]["seq"]
+
+    async def _handle_batch(self) -> int:
+        events = await self._board.read_events(GROUP, self._consumer, block=self._tick)
+        await self._handle_events(events)
+        return len(events)
+
+    async def _handle_events(self, events: list[dict[str, str]]) -> None:
         for event in events:
             if event["type"] == "subgoal.reviewing":
                 task = asyncio.create_task(self._review_and_ack(event))
@@ -103,7 +115,6 @@ class Supervisor:
                 continue
             await self._handle(event)
             await self._board.ack(GROUP, event["seq"])
-        return len(events)
 
     def _reap_reviews(self) -> None:
         for task in [t for t in self._reviews if t.done()]:

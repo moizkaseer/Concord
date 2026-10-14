@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -53,6 +54,7 @@ class WorkerPool:
         handler_timeout: float = 300.0,
         poll_interval: float = 0.05,
         agent_name: str = "specialist",
+        pool_id: str | None = None,
     ) -> None:
         self._board = board
         self._handler = handler
@@ -63,12 +65,15 @@ class WorkerPool:
         self._handler_timeout = handler_timeout
         self._poll_interval = poll_interval
         self._agent_name = agent_name  # names the attempt spans in traces
+        # Worker names are lease owners, so they must not repeat across processes: a pool
+        # resuming a run must never be mistaken for the one that held its leases before.
+        self.pool_id = pool_id or uuid.uuid4().hex[:8]
 
     async def run(self, *, timeout: float | None = None) -> RunStatus:
         """Work the run until it completes or fails, then return its final status."""
         async with asyncio.timeout(timeout), asyncio.TaskGroup() as group:
             for n in range(self._size):
-                group.create_task(self._work(f"worker-{n}"))
+                group.create_task(self._work(f"{self.pool_id}-worker-{n}"))
         return await self._board.status()
 
     async def _work(self, worker: str) -> None:

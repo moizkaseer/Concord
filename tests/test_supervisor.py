@@ -254,6 +254,35 @@ async def test_restarted_supervisor_handles_events_the_last_one_never_acknowledg
     assert handler.calls == ["a", "b"]
 
 
+async def test_restarted_supervisor_takes_over_events_left_under_another_name(board):
+    handler = Recorder()
+    await board.submit([spec("a"), spec("b", None, "a")], supervised=True)
+
+    # The supervisor that died ran under a different consumer name.
+    await board.ensure_group(GROUP)
+    assert await board.read_events(GROUP, "old-supervisor")
+
+    status = await run_supervised(board, handler, consumer="new-supervisor")
+
+    assert status.state == RunState.COMPLETED
+    assert handler.calls == ["a", "b"]
+
+
+async def test_restarted_supervisor_works_through_more_pending_events_than_one_read(board):
+    # More root subgoals than one read returns, all delivered to a supervisor that died.
+    roots = [spec(f"r{n}") for n in range(150)]
+    await board.submit(roots, supervised=True, max_subgoals=150)
+    await board.ensure_group(GROUP)
+    while await board.read_events(GROUP, "supervisor"):
+        pass
+
+    handler = Recorder()
+    status = await run_supervised(board, handler)
+
+    assert status.state == RunState.COMPLETED
+    assert sorted(handler.calls) == sorted(r.id for r in roots)
+
+
 async def test_supervisor_started_late_catches_up_from_the_first_event(board):
     handler = Recorder()
     await board.submit([spec("a"), spec("b", None, "a")], supervised=True)

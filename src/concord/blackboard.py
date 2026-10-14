@@ -582,23 +582,40 @@ class Blackboard:
         consumer: str,
         *,
         pending: bool = False,
+        after: str = "0",
         block: float | None = None,
         count: int = 100,
     ) -> list[dict[str, str]]:
         """Read events for a consumer group.
 
         `pending=True` returns events this consumer was given earlier but never
-        acknowledged, which is how a restarted consumer picks up where it stopped.
+        acknowledged, starting after the event id `after`. This is how a restarted
+        consumer picks up where it stopped.
         """
         response = await self._redis.xreadgroup(
             group,
             consumer,
-            {self._events: "0" if pending else ">"},
+            {self._events: after if pending else ">"},
             count=count,
             block=int(block * 1000) if block else None,
         )
         entries = response[0][1] if response else []
         return [{"seq": seq, **fields} for seq, fields in entries]
+
+    async def claim_pending(self, group: str, consumer: str) -> None:
+        """Hand `consumer` every event of the group that was delivered but never
+        acknowledged, whichever consumer it went to. A run has one supervisor, so one
+        that starts up owns everything an earlier one left unfinished, under any name.
+        """
+        start = "0-0"
+        while True:
+            # Not `justid`: redis-py then drops the cursor needed to page.
+            next_start, *_ = await self._redis.xautoclaim(
+                self._events, group, consumer, min_idle_time=0, start_id=start
+            )
+            if next_start == "0-0":
+                return
+            start = next_start
 
     async def ack(self, group: str, seq: str) -> None:
         await self._redis.xack(self._events, group, seq)
