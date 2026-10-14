@@ -1,8 +1,13 @@
 services:
   redis:
     image: redis:7-alpine
+    # Runs resume from Redis after a crash, so keep its state on disk. The append-only
+    # file is flushed once a second, so a Redis crash can lose up to that much.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -33,4 +38,5 @@ services:
       - "4318:4318"
 
 volumes:
+  redisdata:
   pgdata:

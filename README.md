@@ -9,7 +9,8 @@ fault-injection harness and tracing work and are measured against a mock model. 
 specialists and Claude client have run on 19 real questions with Claude Sonnet 5.5; see
 [Results on real questions](#results-on-real-questions). The drift check is built and its
 runtime behaviour is measured; how often its model reviewer is right has not been measured
-yet (see [Drift check](#drift-check)).
+yet (see [Drift check](#drift-check)). A run survives the process working it being killed
+and resumed by a new one (see [Resuming a run](#resuming-a-run)).
 See [ROADMAP.md](ROADMAP.md) for the build plan.
 
 ## What works today
@@ -31,6 +32,8 @@ See [ROADMAP.md](ROADMAP.md) for the build plan.
     not do the work its subgoal asked for (see [Drift check](#drift-check));
   - halts the run when it goes over its token budget;
   - logs every intervention as a `supervisor.*` event with its reason.
+- **Resuming**: a run's state is all in Redis, so a new process can pick up a run whose
+  process died, without redoing any output already recorded.
 
 - **Tracing**: one run is one OpenTelemetry trace, with spans for the run, each
   pre-dispatch check, each attempt, model and tool calls, and blackboard writes, named after
@@ -89,7 +92,7 @@ figures are word counts and only the relative difference means anything.
 | Time to detect a dead worker | ≤ 0.80s (2 × lease) | about 0.4s at worst |
 | Off-task output caught | precision and recall ≥ 0.8 | reviewer accuracy not measured yet; 8/8 sent back given a reviewer that is never wrong |
 | Tokens saved on runs with an exact duplicate | report the figure | 11.2% |
-| Finished subgoals re-run after a crash | 0 | not measured, recovery not built |
+| Finished subgoals re-run after a crash | 0 | 0 in 10 kill-and-resume trials |
 
 What the supervisor changes, by fault type:
 
@@ -115,6 +118,52 @@ Two gaps are visible and left in on purpose:
 
 Reproduce it with `uv run python -m concord.harness`. CI runs the same command with
 `--check`, which fails the build if a gate for an already-built detector regresses.
+
+## Resuming a run
+
+Everything about a run lives in Redis: the subgoal records, the queue, the leases and the
+event stream. If the process running the workers and the supervisor dies, start new ones on
+the same run id:
+
+```python
+board = Blackboard(redis, run_id)  # the run that was in progress; do not submit again
+pool = WorkerPool(board, handler)
+await asyncio.gather(pool.run(), Supervisor(board).run())
+```
+
+What the new process does with what the old one left behind:
+
+- A subgoal that was being worked on is still leased to a worker that no longer exists.
+  Once the lease runs out the supervisor puts it back in the queue, and that lost attempt
+  counts toward the subgoal's attempt limit.
+- Events the old supervisor received but had not finished handling are handed to the new
+  one, whatever consumer name either used.
+- An output already recorded is never produced again: a subgoal in `reviewing` is reviewed
+  by the new supervisor, and one that is `done` stays done.
+- Worker names carry a per-pool id, so the new workers can never be mistaken for the old
+  ones that held the leases.
+
+**What has been measured.** The harness runs ten trials. Each submits a run, starts a
+separate process that works it, kills that process with SIGKILL at a random point once at
+least one subgoal has finished, and starts a new process on the same run. Half the trials
+review every output. All ten end with every expected output, and no subgoal was worked on
+after its output had been recorded. One or two attempts that were in flight at the kill
+are redone in each trial; that is the cost of a crash, and it is reported. A local run of
+60 trials gave the same result.
+
+**What has not.**
+
+- Losing Redis. The trials keep Redis up. `docker-compose.yml` turns on Redis's
+  append-only file, written to disk once a second, so a Redis crash can lose up to the
+  last second of state changes; that case is not tested.
+- More than one kill per run, and a process that is cut off rather than killed. Lease
+  ownership is checked on every write, so a cut-off worker cannot overwrite a newer
+  attempt, but no trial exercises it.
+- Runs without a supervisor. Nothing but the supervisor takes back an expired lease, so
+  an unsupervised run whose process dies stays stuck on the subgoals it had leased.
+
+A resumed run waits up to one lease length (30 seconds by default) before redoing the work
+that was in flight.
 
 ## Drift check
 

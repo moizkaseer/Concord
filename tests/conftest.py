@@ -32,6 +32,12 @@ async def redis():
 
 
 @pytest.fixture
+def redis_url(redis) -> str:
+    """The URL of the `redis` fixture's database, for code that opens its own connection."""
+    return REDIS_URL
+
+
+@pytest.fixture
 def board(redis) -> Blackboard:
     return Blackboard(redis, uuid.uuid4().hex)
 

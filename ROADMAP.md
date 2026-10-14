@@ -34,6 +34,9 @@ Build in this order. Each phase ends with a test that must pass before the next 
   next subgoal build on a bad output.
 - **A wrong reviewer is bounded.** One output per subgoal may be sent back; after that it
   is kept and flagged. A reviewer that fails is skipped, on record.
+- **A run resumes from Redis alone.** A new process attaches to the run id; expired leases
+  are requeued and unacknowledged supervisor events are claimed by the new supervisor, so
+  no recorded output is redone. Redis is the one component that must survive.
 - **Specialists are a plain model-and-tool loop.** A graph framework is added only where a
   specialist needs branching.
 - **Scope: 5 to 20 subgoals, parallel readers, one writer.**
@@ -58,4 +61,4 @@ proposals.
 | Time to detect a dead worker | ≤ 2 × lease length | about 0.4s at worst against a 0.80s limit |
 | Drift check precision and recall | ≥ 0.8 each | built; reviewer not yet measured on the 100 labelled cases. Given a reviewer that is never wrong, 8/8 off-task outputs are sent back |
 | Tokens saved against a run with no supervisor | report the figure | 11.2% on runs with one exact duplicate |
-| Finished subgoals re-run after a crash | 0 | not measured |
+| Finished subgoals re-run after a crash | 0 | 0 in 10 kill-and-resume trials (process killed with SIGKILL; Redis kept up) |

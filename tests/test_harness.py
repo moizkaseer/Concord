@@ -3,7 +3,8 @@ import dataclasses
 import pytest
 
 from concord.graph import validate_graph
-from concord.harness.report import gates, render, summarize
+from concord.harness.crash import CrashTrial, _score, run_trial
+from concord.harness.report import crash_gates, gates, render, summarize
 from concord.harness.runner import Mode, Outcome, Timings, run_scenario
 from concord.harness.scenarios import DUPLICATE_KINDS, Kind, build, build_all
 
@@ -141,7 +142,7 @@ def _clean_results() -> list[Outcome]:
 def test_gates_pass_on_clean_results_and_report_renders():
     outcomes = _clean_results()
 
-    text, checks = render(outcomes, Timings())
+    text, checks = render(outcomes, Timings(), [CLEAN_TRIAL])
 
     assert all(gate.passed for gate in checks)
     assert "SCORECARD" in text and "GATES" in text
@@ -182,3 +183,58 @@ def _assert_gate_fails(kind: Kind, mode: Mode, change: dict, failing_gate: str) 
     failed = [g.name for g in gates(summarize(outcomes), Timings()) if not g.passed]
 
     assert any(name.startswith(failing_gate) for name in failed)
+
+
+CLEAN_TRIAL = CrashTrial(
+    seed=0,
+    review=False,
+    killed=True,
+    completed=True,
+    correct=True,
+    reruns=0,
+    lost_attempts=1,
+    seconds=2.0,
+)
+
+
+@pytest.mark.parametrize("review", [False, True])
+async def test_killed_run_resumes_without_re_running_finished_work(redis, redis_url, review):
+    """Phase 7 exit test, one trial. The scorecard runs ten."""
+    trial = await run_trial(redis, redis_url, seed=0, review=review)
+
+    assert trial.killed and trial.correct
+    assert trial.reruns == 0
+    assert await redis.dbsize() == 0
+
+
+async def test_crash_score_counts_work_on_a_subgoal_after_its_output_was_recorded(board):
+    scenario = build(Kind.HEALTHY, seed=0)
+    await board.submit(scenario.specs)
+    first = scenario.specs[0].id
+    await board.log_event("work.started", id=first, attempt="1")
+    await board.log_event("subgoal.done", id=first)
+    await board.log_event("work.started", id=first, attempt="2")
+
+    trial = await _score(board, scenario, seed=0, review=False, killed=True, seconds=1.0)
+
+    assert trial.reruns == 1 and not trial.completed
+
+
+@pytest.mark.parametrize(
+    ("change", "failing_gate"),
+    [
+        ({"killed": False}, "every crash trial killed the process mid-run"),
+        ({"correct": False}, "every killed run resumes to a correct result"),
+        ({"reruns": 1}, "no finished subgoal is re-run after a crash"),
+    ],
+)
+def test_a_crash_regression_fails_its_gate(change, failing_gate):
+    trials = [CLEAN_TRIAL, dataclasses.replace(CLEAN_TRIAL, seed=1, **change)]
+
+    failed = [g.name for g in crash_gates(trials) if not g.passed]
+
+    assert failed == [failing_gate]
+
+
+def test_no_crash_trials_fails_the_gates():
+    assert not all(g.passed for g in crash_gates([]))

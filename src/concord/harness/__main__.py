@@ -9,6 +9,7 @@ import sys
 
 from redis.asyncio import Redis
 
+from concord.harness.crash import run_trials
 from concord.harness.report import render
 from concord.harness.runner import Timings, run_all
 from concord.harness.scenarios import build_all
@@ -21,6 +22,9 @@ async def _main() -> int:
     )
     parser.add_argument("--seeds", type=int, default=8, help="scenarios per fault type")
     parser.add_argument("--check", action="store_true", help="exit with status 1 if a gate fails")
+    parser.add_argument(
+        "--crash-trials", type=int, default=10, help="kill-and-resume trials to run"
+    )
     parser.add_argument("--json", metavar="PATH", help="also write every run's outcome as JSON")
     parser.add_argument(
         "--redis-url",
@@ -33,14 +37,17 @@ async def _main() -> int:
     redis = Redis.from_url(args.redis_url, decode_responses=True)
     try:
         outcomes = await run_all(redis, build_all(args.seeds), timings=timings)
+        trials = await run_trials(redis, args.redis_url, args.crash_trials)
     finally:
         await redis.aclose()
 
-    text, checks = render(outcomes, timings)
+    text, checks = render(outcomes, timings, trials)
     print(text)
     if args.json:
         with open(args.json, "w") as out:
-            json.dump([dataclasses.asdict(o) for o in outcomes], out, indent=2)
+            runs = [dataclasses.asdict(o) for o in outcomes]
+            crashes = [dataclasses.asdict(t) for t in trials]
+            json.dump({"scenarios": runs, "crash_trials": crashes}, out, indent=2)
     return 1 if args.check and not all(g.passed for g in checks) else 0
 
 

@@ -4,6 +4,7 @@ import statistics
 from collections import defaultdict
 from dataclasses import dataclass
 
+from concord.harness.crash import CrashTrial
 from concord.harness.runner import Mode, Outcome, Timings
 from concord.harness.scenarios import DUPLICATE_KINDS, HEALTHY_KINDS, Kind
 
@@ -157,7 +158,9 @@ def review_table(summaries: dict[tuple[Kind, Mode], Summary]) -> str:
     return table(headers, rows)
 
 
-def scorecard(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> str:
+def scorecard(
+    summaries: dict[tuple[Kind, Mode], Summary], timings: Timings, trials: list[CrashTrial]
+) -> str:
     """The roadmap's seven measures, for the supervisor as it ships by default."""
     sup = Mode.SUPERVISED
     exact = summaries[(Kind.EXACT_DUPLICATE, sup)]
@@ -197,9 +200,43 @@ def scorecard(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> 
             "report the figure",
             f"{100 * (1 - with_dupes / without):.1f}% ({without:.0f} -> {with_dupes:.0f})",
         ],
-        ["Finished subgoals re-run after a crash", "0", "not measured, recovery not built"],
+        [
+            "Finished subgoals re-run after a crash",
+            "0",
+            f"{sum(t.reruns for t in trials)} in {len(trials)} kill-and-resume trials",
+        ],
     ]
     return table(["Measure", "Target", "Result"], rows)
+
+
+def crash_table(trials: list[CrashTrial]) -> str:
+    """Kill-and-resume trials, split by whether outputs were reviewed."""
+    rows = []
+    for label, review in (("no review", False), ("drift check on", True)):
+        group = [t for t in trials if t.review is review]
+        if not group:
+            continue
+        rows.append(
+            [
+                label,
+                str(len(group)),
+                _ratio(sum(t.killed for t in group), len(group)),
+                _ratio(sum(t.correct for t in group), len(group)),
+                str(sum(t.reruns for t in group)),
+                str(sum(t.lost_attempts for t in group)),
+                f"{statistics.median(t.seconds for t in group):.1f}s",
+            ]
+        )
+    headers = [
+        "Run",
+        "Trials",
+        "Killed mid-run",
+        "Correct result after resume",
+        "Finished subgoals re-run",
+        "In-flight attempts redone",
+        "Median time",
+    ]
+    return table(headers, rows)
 
 
 @dataclass(frozen=True)
@@ -279,20 +316,44 @@ def gates(summaries: dict[tuple[Kind, Mode], Summary], timings: Timings) -> list
     ]
 
 
-def render(outcomes: list[Outcome], timings: Timings) -> tuple[str, list[Gate]]:
+def crash_gates(trials: list[CrashTrial]) -> list[Gate]:
+    killed = sum(t.killed for t in trials)
+    correct = sum(t.correct for t in trials)
+    reruns = sum(t.reruns for t in trials)
+    return [
+        Gate(
+            "every crash trial killed the process mid-run",
+            bool(trials) and killed == len(trials),
+            _ratio(killed, len(trials)),
+        ),
+        Gate(
+            "every killed run resumes to a correct result",
+            bool(trials) and correct == len(trials),
+            _ratio(correct, len(trials)),
+        ),
+        Gate("no finished subgoal is re-run after a crash", reruns == 0, f"{reruns} re-runs"),
+    ]
+
+
+def render(
+    outcomes: list[Outcome], timings: Timings, trials: list[CrashTrial]
+) -> tuple[str, list[Gate]]:
     summaries = summarize(outcomes)
     scenarios = len({o.scenario for o in outcomes})
-    checks = gates(summaries, timings)
+    checks = gates(summaries, timings) + crash_gates(trials)
     sections = [
         f"Concord fault-injection harness: {scenarios} scenarios, {len(outcomes)} runs",
         "Mock model throughout. Token figures are word counts, so only the relative\n"
         "difference between runs means anything.",
-        "SCORECARD (supervisor with its default settings)\n\n" + scorecard(summaries, timings),
+        "SCORECARD (supervisor with its default settings)\n\n"
+        + scorecard(summaries, timings, trials),
         "BY FAULT TYPE\n\n" + fault_table(summaries),
         "SIMILARITY MATCHING (off by default; word-overlap embedder, threshold 0.9)\n\n"
         + similarity_table(summaries),
         "DRIFT CHECK (off by default; stand-in reviewer that is never wrong)\n\n"
         + review_table(summaries),
+        "KILL AND RESUME (process killed with SIGKILL, run resumed by a new process; "
+        "Redis stays up)\n\n" + crash_table(trials),
         "GATES\n\n"
         + "\n".join(f"{'PASS' if g.passed else 'FAIL'}  {g.name}: {g.detail}" for g in checks),
     ]
